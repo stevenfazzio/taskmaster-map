@@ -138,10 +138,6 @@ def _pill(value: str, hex_color: str) -> str:
 # ── hover card ───────────────────────────────────────────────────────────────
 
 _LBL = "62px"
-_BAR = (
-    '<div style="background:#eaeef2;height:2px;width:54px;margin-top:3px;border-radius:1px;">'
-    '<div style="background:#b0b6be;height:100%;width:{pct}%;border-radius:1px;"></div></div>'
-)
 
 
 def _meta_cell(label: str, placeholder: str) -> str:
@@ -156,14 +152,8 @@ HOVER_TEMPLATE = (
     "<div style=\"font-family:'IBM Plex Sans',sans-serif;width:360px;padding:9px 11px;"
     'box-sizing:border-box;color:#1f2328;">'
     # context: series · episode
-    '<div style="font-size:11.5px;color:#8b949e;margin-bottom:5px;overflow:hidden;'
+    '<div style="font-size:11.5px;color:#8b949e;margin-bottom:9px;overflow:hidden;'
     'text-overflow:ellipsis;white-space:nowrap;">{series_ep}</div>'
-    # stats row: avg / divisiveness / top, each with a percentile bar
-    '<div style="font-size:11px;color:#57606a;display:flex;gap:18px;margin-bottom:11px;">'
-    "<div><div>Avg {avg}</div>" + _BAR.replace("{pct}", "{avg_pct}") + "</div>"
-    "<div><div>Spread {spread}</div>" + _BAR.replace("{pct}", "{spread_pct}") + "</div>"
-    "<div><div>Top {top}</div>" + _BAR.replace("{pct}", "{top_pct}") + "</div>"
-    "</div>"
     # the brief (dominant)
     '<div style="font-size:14px;line-height:1.45;margin-bottom:10px;">{brief}</div>'
     # task-type pill (the card's headline category stamp)
@@ -229,20 +219,13 @@ def main():
 
     # ── colormap value arrays ───────────────────────────────────────────────
     fmt_vals = df["task_format"].fillna("Filmed").astype(str).values
-    era_vals = df["channel_era"].fillna("Unknown").astype(str).values
     activity_vals = _top_n_plus_other(
         np.array([_label(_slug_or(v, allowed["activity_type"])) for v in df["activity_type"].values])
     )
     judged_vals = _top_n_plus_other(
         np.array([_prettify(_slug_or(v, allowed["judging_criterion"])) for v in df["judging_criterion"].values])
     )
-    twist_vals = np.array(
-        ["Has a twist" if len(_maybe_json_list(v)) else "Straightforward" for v in df["task_twist"].values]
-    )
 
-    avg = pd.to_numeric(df["avg_score"], errors="coerce")
-    spread = pd.to_numeric(df["score_spread"], errors="coerce")
-    top = pd.to_numeric(df["top_score"], errors="coerce")
     air = pd.to_datetime(df["air_date"], errors="coerce")
     air_num = (air - air.min()).dt.days.astype(float)
     air_num = air_num.fillna(air_num.median()).values
@@ -254,18 +237,6 @@ def main():
         else escape(str(s))
         for s, e, t in zip(df["series"], df["episode_num"], df["episode_title"])
     ]
-
-    def _fmt_num(v, dec=False):
-        if pd.isna(v):
-            return "—"
-        return f"{v:.1f}" if dec else f"{int(round(v))}"
-
-    avg_disp = [_fmt_num(v, dec=True) for v in avg]
-    spread_disp = [_fmt_num(v) for v in spread]
-    top_disp = [_fmt_num(v) for v in top]
-    avg_pct = avg.rank(pct=True).mul(100).round(1).fillna(0).tolist()
-    spread_pct = spread.rank(pct=True).mul(100).round(1).fillna(0).tolist()
-    top_pct = top.rank(pct=True).mul(100).round(1).fillna(0).tolist()
 
     brief = [escape(str(b)) for b in df["embed_text"].fillna("")]
 
@@ -294,20 +265,12 @@ def main():
         for b, s, cs, w in zip(df["embed_text"].fillna(""), df["series"], contestants_list, df["winner"].fillna(""))
     ]
 
-    # Marker size encodes divisiveness (bigger = more divisive); unscored → small.
-    spread_filled = spread.fillna(0).values
-    denom = (spread_filled.max() - spread_filled.min()) or 1.0
-    marker_sizes = 5 + 9 * (spread_filled - spread_filled.min()) / denom
+    # Uniform marker size (divisiveness, which used to drive it, was dropped).
+    marker_sizes = np.full(n, 7.0)
 
     extra_data = pd.DataFrame(
         {
             "series_ep": series_ep,
-            "avg": avg_disp,
-            "avg_pct": avg_pct,
-            "spread": spread_disp,
-            "spread_pct": spread_pct,
-            "top": top_disp,
-            "top_pct": top_pct,
             "brief": brief,
             "type_pill": type_pill,
             "activity": activity_disp,
@@ -337,13 +300,8 @@ def main():
 
     rawdata = [
         fmt_vals,
-        era_vals,
         activity_vals,
         judged_vals,
-        twist_vals,
-        avg.fillna(avg.min()).values,
-        spread.fillna(0).values,
-        top.fillna(top.min()).values,
         air_num,
     ]
     metadata = [
@@ -354,13 +312,8 @@ def main():
             "color_mapping": _TASK_TYPE_COLORS,
             "show_legend": True,
         },
-        _cat("era", "Channel era", era_vals),
         _cat("activity", "Activity (LLM)", activity_vals),
         _cat("judged", "Judged on (LLM)", judged_vals),
-        _cat("twist", "Has a twist (LLM)", twist_vals),
-        {"field": "avg", "description": "Average score", "kind": "continuous", "cmap": "YlOrRd"},
-        {"field": "spread", "description": "Divisiveness (score spread)", "kind": "continuous", "cmap": "magma"},
-        {"field": "top", "description": "Top score", "kind": "continuous", "cmap": "viridis"},
         {"field": "air", "description": "Air date", "kind": "continuous", "cmap": "cividis"},
     ]
 
