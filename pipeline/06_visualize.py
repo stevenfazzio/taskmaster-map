@@ -173,8 +173,99 @@ HOVER_TEMPLATE = (
     "</div>"
 )
 
-CUSTOM_JS = "datamap.deckgl.setProps({controller: {scrollZoom: {speed: 0.05, smooth: true}}});"
-CUSTOM_CSS = "#main-title { letter-spacing: -0.02em; line-height: 1.1 !important; color:#1f2328; }"
+# Emoji "browse by motif" strip: 16 single-glyph buttons under the search box. Each
+# button just fills the native search input with its emoji (which hides every task
+# that doesn't carry that glyph) — so it reuses DataMapPlot's own search; the only
+# new code is the grid + click wiring. Single-select: click the active one to clear.
+EMOJI_STRIP_JS = """
+(function () {
+  const BUTTONS = [
+    ["\\uD83E\\uDD5A", "egg"], ["\\uD83C\\uDF88", "balloon"], ["\\uD83E\\uDD86", "duck"],
+    ["\\uD83E\\uDD65", "coconut"], ["\\uD83E\\uDDFB", "loo roll"], ["\\uD83D\\uDDD1\\uFE0F", "wheelie bin"],
+    ["\\uD83D\\uDC55", "clothing"], ["\\uD83C\\uDFA9", "hats"], ["\\uD83C\\uDF81", "present"],
+    ["\\uD83C\\uDFB5", "song"], ["\\uD83C\\uDFAC", "film"], ["\\uD83D\\uDCA5", "smash"],
+    ["\\uD83E\\uDD22", "gross"], ["\\uD83D\\uDE48", "hide / blindfold"], ["\\uD83E\\uDD2B", "silent"],
+    ["\\u2696\\uFE0F", "balancing"]
+  ];
+  function build() {
+    const sc = document.getElementById("search-container");
+    if (!sc) { return setTimeout(build, 120); }
+    if (document.getElementById("emoji-strip")) { return; }
+    const strip = document.createElement("div");
+    strip.id = "emoji-strip";
+    strip.className = "container-box interactive-element";  // match the other UI boxes (shadow/inset/pointer-events)
+    const grid = document.createElement("div");
+    grid.className = "emoji-grid";
+    let active = "";
+    // The emoji filter is its OWN selection (filterId "emoji-filter"), independent of
+    // the text-search box. DataMapPlot's dataSelectionManager intersects it with the
+    // search, so the two compose without either one touching the other's state.
+    function apply() {
+      const dm = window.datamap;
+      if (!dm) { return; }
+      if (!active) {
+        try { dm.removeSelection("emoji-filter"); } catch (e) {}
+      } else {
+        const te = (dm.metaData && dm.metaData.task_emoji) || [];
+        const idx = [];
+        for (let i = 0; i < te.length; i++) { if ((te[i] || "").indexOf(active) !== -1) { idx.push(i); } }
+        dm.addSelection(idx, "emoji-filter");
+      }
+      strip.querySelectorAll(".emoji-btn").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.emoji === active);
+      });
+    }
+    BUTTONS.forEach(function (pair) {
+      const b = document.createElement("button");
+      b.className = "emoji-btn";
+      b.type = "button";
+      b.textContent = pair[0];
+      b.title = pair[1];
+      b.setAttribute("aria-label", pair[1]);
+      b.dataset.emoji = pair[0];
+      b.addEventListener("click", function () {
+        active = (active === pair[0]) ? "" : pair[0];
+        apply();
+      });
+      grid.appendChild(b);
+    });
+    strip.appendChild(grid);
+    sc.after(strip);
+  }
+  build();
+})();
+"""
+
+CUSTOM_JS = "datamap.deckgl.setProps({controller: {scrollZoom: {speed: 0.05, smooth: true}}});\n" + EMOJI_STRIP_JS
+
+CUSTOM_CSS = """
+#main-title { letter-spacing: -0.02em; line-height: 1.1 !important; color: #1f2328; }
+#search-container { width: 292px; box-sizing: border-box; }
+#text-search { width: 100%; box-sizing: border-box; }
+/* box chrome (shadow / radius / inset margin / padding / pointer-events) comes from the
+   shared .container-box + .interactive-element classes; this only sets width + the grid. */
+#emoji-strip { width: 292px; box-sizing: border-box; }
+#emoji-strip .emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+}
+#emoji-strip .emoji-btn {
+  height: 29px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; line-height: 1;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 7px; cursor: pointer;
+  transition: background .12s, border-color .12s, transform .05s;
+  -webkit-user-select: none; user-select: none;
+}
+#emoji-strip .emoji-btn:hover { background: #eef1f4; border-color: rgba(0, 0, 0, 0.30); }
+#emoji-strip .emoji-btn:active { transform: scale(0.88); }
+#emoji-strip .emoji-btn.active {
+  background: #1f2328; border-color: #1f2328; box-shadow: 0 1px 5px rgba(0, 0, 0, 0.30);
+}
+"""
 
 # Attribution footer (bottom-right) — the data is CC BY-SA 4.0, so the published map
 # must credit its source on the page itself, not only in the README.
@@ -259,8 +350,11 @@ def main():
     air_disp = [a.strftime("%d %b %Y") if pd.notna(a) else "—" for a in air]
     wiki_url = [f"https://taskmaster.fandom.com/wiki/{escape(str(s).replace(' ', '_'))}" for s in df["series"]]
 
-    # Search index drives the contestant "filter": typing a contestant name (or a
-    # word from the brief/series) highlights matching tasks via DataMapPlot search.
+    # Search index drives the text "filter": typing a contestant name (or a word from
+    # the brief/series) highlights matching tasks via DataMapPlot search. Emoji are a
+    # SEPARATE filter (the button strip registers an "emoji-filter" selection via the
+    # dataSelectionManager), deliberately kept out of this index so the text box and the
+    # emoji bar are independent systems that compose by intersection.
     search_text = [
         f"{b} {s} {' '.join(cs)} {w}"
         for b, s, cs, w in zip(df["embed_text"].fillna(""), df["series"], contestants_list, df["winner"].fillna(""))
