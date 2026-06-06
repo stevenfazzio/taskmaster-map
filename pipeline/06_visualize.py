@@ -189,7 +189,8 @@ EMOJI_STRIP_JS = """
   ];
   function build() {
     const sc = document.getElementById("search-container");
-    if (!sc) { return setTimeout(build, 120); }
+    const dm = window.datamap;
+    if (!sc || !dm) { return setTimeout(build, 120); }
     if (document.getElementById("emoji-strip")) { return; }
     const strip = document.createElement("div");
     strip.id = "emoji-strip";
@@ -231,6 +232,61 @@ EMOJI_STRIP_JS = """
     });
     strip.appendChild(grid);
     sc.after(strip);
+
+    // ── live "N tasks" caption + blank-on-empty (mirrors the HF filter panel) ──
+    const count = document.createElement("div");
+    count.id = "emoji-count";
+    strip.after(count);
+    function updateCount() {
+      const d = window.datamap;
+      const mgr = d && d.dataSelectionManager;
+      if (!d || !mgr || !d.selected) { setTimeout(updateCount, 150); return; }  // datamap not fully ready yet
+      const total = d.selected.length;
+      const hasFilters = Object.keys(mgr.selectedIndicesByItem).length > 0;
+      const n = hasFilters ? mgr.getSelectedIndices().size : total;
+      if (hasFilters && n === 0) {
+        count.textContent = "No matches";
+        count.classList.add("empty");
+      } else {
+        count.textContent = n.toLocaleString() + (n === 1 ? " task" : " tasks");
+        count.classList.remove("empty");
+      }
+    }
+    if (!dm.__emojiCountPatched) {
+      dm.__emojiCountPatched = true;
+      const origHighlight = dm.highlightPoints.bind(dm);
+      dm.highlightPoints = function (itemId) {
+        // keep point radius through the highlight clone (DataMapPlot otherwise resets it)
+        const layer = dm.pointLayer;
+        const realClone = layer.clone.bind(layer);
+        layer.clone = function (ov) {
+          ov.radiusMinPixels = dm.pointRadiusMinPixels;
+          ov.radiusMaxPixels = dm.pointRadiusMaxPixels;
+          return realClone(ov);
+        };
+        origHighlight(itemId);
+        layer.clone = realClone;
+        // DataMapPlot shows ALL points on an empty selection; when filters are active but
+        // match nothing, force the map blank instead so the red "No matches" caption fits.
+        const mgr = dm.dataSelectionManager;
+        const hasFilters = Object.keys(mgr.selectedIndicesByItem).length > 0;
+        if (hasFilters && mgr.getSelectedIndices().size === 0) {
+          dm.selected.fill(-1.0);
+          const i = dm.layers.indexOf(dm.pointLayer);
+          if (i !== -1) {
+            const blanked = dm.pointLayer.clone({
+              radiusMinPixels: dm.pointRadiusMinPixels,
+              radiusMaxPixels: dm.pointRadiusMaxPixels,
+            });
+            dm.layers[i] = blanked;
+            dm.pointLayer = blanked;
+            dm.deckgl.setProps({ layers: [...dm.layers] });
+          }
+        }
+        updateCount();
+      };
+    }
+    updateCount();
   }
   build();
 })();
@@ -265,6 +321,15 @@ CUSTOM_CSS = """
 #emoji-strip .emoji-btn.active {
   background: #1f2328; border-color: #1f2328; box-shadow: 0 1px 5px rgba(0, 0, 0, 0.30);
 }
+#emoji-count {
+  margin: 6px 0 0 28px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: #8b949e;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  pointer-events: none;
+}
+#emoji-count.empty { color: #d9594c; font-weight: 600; }
 """
 
 # Attribution footer (bottom-right) — the data is CC BY-SA 4.0, so the published map
