@@ -152,8 +152,10 @@ HOVER_TEMPLATE = (
     "<div style=\"font-family:'IBM Plex Sans',sans-serif;width:360px;padding:9px 11px;"
     'box-sizing:border-box;color:#1f2328;">'
     # context: series · episode
-    '<div style="font-size:11.5px;color:#8b949e;margin-bottom:9px;overflow:hidden;'
+    '<div style="font-size:11.5px;color:#8b949e;margin-bottom:7px;overflow:hidden;'
     'text-overflow:ellipsis;white-space:nowrap;">{series_ep}</div>'
+    # emoji gist — the glanceable, witty headline (LLM-generated, stage 05)
+    '<div style="font-size:24px;line-height:1.2;letter-spacing:2px;margin-bottom:7px;">{task_emoji}</div>'
     # the brief (dominant)
     '<div style="font-size:14px;line-height:1.45;margin-bottom:10px;">{brief}</div>'
     # task-type pill (the card's headline category stamp)
@@ -166,9 +168,7 @@ HOVER_TEMPLATE = (
     + _meta_cell("Winner", "winner")
     + _meta_cell("Twist", "twist")
     + "</div>"
-    # props + footer
-    '<div style="font-size:11px;color:#57606a;margin-bottom:3px;overflow:hidden;'
-    'text-overflow:ellipsis;white-space:nowrap;">🎒 {props}</div>'
+    # footer
     '<div style="font-size:11px;color:#8b949e;line-height:1.5;">📺 {air_date} &nbsp;·&nbsp; 👥 {players}</div>'
     "</div>"
 )
@@ -250,7 +250,8 @@ def main():
     twist_disp = [
         _dim_cell(", ".join(_prettify(t) for t in _maybe_json_list(v)) or "—") for v in df["task_twist"].values
     ]
-    props_disp = [escape(", ".join(_maybe_json_list(v))) or "—" for v in df["key_props"].values]
+    # key_props is still extracted (stage 05) but no longer shown — the emoji gist replaced it.
+    emoji_disp = [escape(str(e)) for e in df["task_emoji"].fillna("")]
     winner_disp = [_dim_cell(w) for w in df["winner"].fillna("").values]
 
     contestants_list = [_maybe_json_list(v) for v in df["contestants"].values]
@@ -271,13 +272,13 @@ def main():
     extra_data = pd.DataFrame(
         {
             "series_ep": series_ep,
+            "task_emoji": emoji_disp,
             "brief": brief,
             "type_pill": type_pill,
             "activity": activity_disp,
             "judged": judged_disp,
             "winner": winner_disp,
             "twist": twist_disp,
-            "props": props_disp,
             "air_date": air_disp,
             "players": players_disp,
             "wiki_url": wiki_url,

@@ -83,6 +83,11 @@ TAXONOMY_JSON = Path(__file__).resolve().parent / "taxonomy.json"
 STRUCTURED_FIELDS_PARQUET = DATA_DIR / "structured_fields.parquet"
 STRUCTURED_FIELDS_CACHE_DIR = DATA_DIR / "structured_fields_cache"  # per-task JSON, resumable
 
+# Emoji summary: a separate, single-purpose pass (its own prompt + cache) so the
+# tuned wit survives untouched and rerunning 05 regenerates only the emoji.
+EMOJI_CACHE_DIR = DATA_DIR / "emoji_cache"  # per-task .txt, resumable
+EMOJI_MAX_TOKENS = 64  # ceiling only; output is ≤4 emoji, headroom for any adaptive thinking
+
 # --- Stage 06: DataMapPlot visualization ---
 MAP_HTML = DATA_DIR / "task_map.html"
 DOCS_HTML = DOCS_DIR / "index.html"

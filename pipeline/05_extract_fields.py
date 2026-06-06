@@ -9,6 +9,11 @@ Each field comes back as {value, quote} — the quote is a short verbatim span f
 the brief justifying the choice (great hover evidence). Invalid slugs are coerced
 to 'other' at render time (stage 06); the truth stays in the parquet.
 
+A second, single-purpose pass generates a 2-4 emoji summary per task (its own
+prompt + data/emoji_cache/, merged in as the `task_emoji` column). Keeping it
+separate from the taxonomy call preserves the tuned wit and means a rerun after
+the taxonomy is cached regenerates only the cheap emoji.
+
 Validate first on a sample (`--limit 50`), eyeball the tags, then run the full set
 (the sample's cached results are reused). Opus 4.8 takes no `temperature`, so the
 call is just model + max_tokens + system (cached) + messages.
@@ -32,6 +37,8 @@ from anthropic import AsyncAnthropic
 from config import (
     ANTHROPIC_API_KEY,
     ANTHROPIC_MODEL_EXTRACT,
+    EMOJI_CACHE_DIR,
+    EMOJI_MAX_TOKENS,
     EXTRACT_CONCURRENCY,
     EXTRACT_MAX_RETRIES,
     EXTRACT_MAX_TOKENS,
@@ -170,6 +177,92 @@ async def _run_extractions(rows: pd.DataFrame, system: str) -> None:
         await coro
 
 
+# ── emoji summary pass ──────────────────────────────────────────────────────
+# A separate, single-purpose call: the taxonomy prompt above classifies; this one
+# performs. Bundling the two dilutes the wit, so the emoji gets its own prompt and
+# its own cache — a rerun regenerates only the emoji once the taxonomy is cached.
+EMOJI_SYSTEM = (
+    "You produce a short emoji summary of a task from the comedy panel show Taskmaster — "
+    "a glanceable, witty visual gist. These tasks are deliberately silly; the emoji should be "
+    "playful, and visual puns are welcome (e.g. 🥊 for a 'hole punch').\n\n"
+    "Use 2-4 emoji, most evocative first, capturing in priority order: (1) the funniest or most "
+    "defining element, (2) the core action + key object, (3) a memorable twist, constraint, or count. "
+    "Add a 3rd/4th emoji ONLY when it adds a DISTINCT meaningful element — never a duplicate, a "
+    "near-synonym, or decoration.\n\n"
+    "Rules:\n"
+    "- For abstract 'bring the most/best X' prize tasks, depict the QUALITY being judged "
+    "(🤯 extraordinary, 😬 awkward, 🤑 expensive, 🪞 narcissistic) rather than a generic 🎁.\n"
+    "- Avoid filler (✨ 🤔 ❓) and generic 🎁 unless genuinely the best fit.\n"
+    "- Prefer specific, recognisable emoji over vague ones.\n"
+    "- Reply with ONLY the emoji — no words, no spaces, no explanation.\n\n"
+    "Examples (style/length, not content):\n"
+    "- 'Eat as much watermelon as possible.' -> 🍉😋\n"
+    "- 'Do something that will look impressive in reverse.' -> ⏪🤸\n"
+    "- 'Most extraordinary souvenir.' -> 🌍🤯😮"
+)
+
+
+async def _emoji_one(client, sem, task_id, brief) -> str:
+    last_err = None
+    for attempt in range(EXTRACT_MAX_RETRIES):
+        try:
+            async with sem:
+                resp = await client.messages.create(
+                    model=ANTHROPIC_MODEL_EXTRACT,
+                    max_tokens=EMOJI_MAX_TOKENS,
+                    system=[{"type": "text", "text": EMOJI_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                    messages=[{"role": "user", "content": f"Task brief:\n{brief}"}],
+                )
+            return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        except Exception as e:  # noqa: BLE001 — one bad task shouldn't crash the batch
+            last_err = e
+            if attempt < EXTRACT_MAX_RETRIES - 1:
+                await asyncio.sleep(min(2**attempt * 2, 30))
+    print(f"  emoji failed for {task_id}: {type(last_err).__name__}: {last_err}")
+    return ""  # not cached (see _run_emoji) so a later rerun retries it
+
+
+def _load_emoji(task_id) -> str:
+    p = EMOJI_CACHE_DIR / f"{_safe_filename(task_id)}.txt"
+    return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+
+
+def _save_emoji(task_id, emoji: str) -> None:
+    out_path = EMOJI_CACHE_DIR / f"{_safe_filename(task_id)}.txt"
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=EMOJI_CACHE_DIR, suffix=".txt.tmp")
+    os.close(tmp_fd)
+    try:
+        Path(tmp_path).write_text(emoji, encoding="utf-8")
+        os.replace(tmp_path, out_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
+async def _run_emoji(rows: pd.DataFrame) -> None:
+    client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    sem = asyncio.Semaphore(EXTRACT_CONCURRENCY)
+
+    todo = []
+    for _, row in rows.iterrows():
+        if (EMOJI_CACHE_DIR / f"{_safe_filename(row['task_id'])}.txt").exists():
+            continue
+        todo.append((row["task_id"], row["embed_text"]))
+    print(f"{len(todo)} emoji to generate ({len(rows) - len(todo)} already cached)")
+    if not todo:
+        return
+
+    async def _do(task_id, brief):
+        emoji = await _emoji_one(client, sem, task_id, brief)
+        if emoji:  # only cache successes — empties stay uncached so reruns retry them
+            _save_emoji(task_id, emoji)
+
+    tasks = [_do(tid, b) for tid, b in todo]
+    for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="emoji"):
+        await coro
+
+
 def _parse_json(raw_text):
     if raw_text is None:
         return None, "no_raw_text"
@@ -228,6 +321,7 @@ def aggregate(taxonomy, fields) -> pd.DataFrame:
         rows.append(row)
 
     df = pd.DataFrame(rows)
+    df["task_emoji"] = [_load_emoji(t) for t in df["task_id"]]
     tmp_fd, tmp_path = tempfile.mkstemp(dir=STRUCTURED_FIELDS_PARQUET.parent, suffix=".parquet.tmp")
     os.close(tmp_fd)
     try:
@@ -244,6 +338,7 @@ def aggregate(taxonomy, fields) -> pd.DataFrame:
     print(f"  API errors:        {df['error'].notna().sum()}")
     print(f"  Parse errors:      {df['parse_error'].notna().sum()}")
     print(f"  Validation issues: {df['validation_issues'].notna().sum()}")
+    print(f"  emoji present:     {(df['task_emoji'].str.len() > 0).sum()} / {len(df)}")
     for f in fields:
         if taxonomy[f]["type"] == "single-select":
             print(f"  {f}: {df[f].value_counts().to_dict()}")
@@ -259,6 +354,7 @@ def main():
     args = parser.parse_args()
 
     STRUCTURED_FIELDS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    EMOJI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if not ANTHROPIC_API_KEY and not args.aggregate_only:
         raise SystemExit("ANTHROPIC_API_KEY not set")
 
@@ -274,6 +370,7 @@ def main():
 
     if not args.aggregate_only:
         asyncio.run(_run_extractions(df, system))
+        asyncio.run(_run_emoji(df))
 
     aggregate(taxonomy, fields)
 
