@@ -1,0 +1,61 @@
+{
+  "_comment": "v1 schema for LLM-extracted per-task fields (stage 05). Each field is an ORTHOGONAL axis: activity_type = what you physically DO; judging_criterion = how the winner is DECIDED; task_twist = the gimmick/constraint (multi, usually a short list or empty); key_props = notable objects (hover flavour only, never a colormap). Do not reuse a slug from one field as the value for another. Slugs are deliberately fan-legible (they become colormap categories and filters). Expect to iterate this against a ~50-task sample before the full run, the way the sibling huggingface-dataset-map taxonomy was iterated.",
+
+  "activity_type": {
+    "_note": "Single-select. The headline 'what kind of task is this'. Pick the dominant act; if a task both builds and performs, choose the one the brief foregrounds.",
+    "type": "single-select",
+    "categories": [
+      {"name": "make-or-build", "description": "Create or construct a physical thing: draw, paint, sculpt, build a contraption, assemble, design, cook-as-craft. The core act is making an object or artwork that will be looked at."},
+      {"name": "performance", "description": "Perform for the camera or studio: sing, dance, act, do an impression, tell a joke, put on a show, deliver a routine, stunt. The core act is a performance watched by others."},
+      {"name": "physical-feat", "description": "An athletic or dexterity challenge: throw, catch, aim, roll, balance, race, jump, lift, hit a target. The core act is bodily skill or coordination."},
+      {"name": "food-and-drink", "description": "Eat, drink, taste, identify, or prepare food and drink. Includes consuming as much/as fast as possible, blind taste tests, and assembling edible things judged as food."},
+      {"name": "mental-puzzle", "description": "Solve a problem with your head: a riddle, code, sum, logic puzzle, memory feat, quiz, or planning challenge. The core act is figuring something out."},
+      {"name": "find-or-acquire", "description": "Bring, find, fetch, collect, or retrieve items — including prize-task 'bring the most/best X' briefs and treasure-hunt searches. The core act is sourcing or gathering things."},
+      {"name": "social-mission", "description": "Use other people as the medium: persuade, recruit, instruct, prank, or get a member of the public or a helper to do something. The core act is influencing other people (distinct from deceive-the-taskmaster, which targets Alex/Greg)."},
+      {"name": "deceive-alex-or-greg", "description": "Trick, fool, surprise, sneak past, smuggle, or mislead Alex Horne (in filmed tasks — the most common case) or Greg the Taskmaster (in the studio). The core act is pulling something over on them, not on other people (which is social-mission)."},
+      {"name": "endurance-or-wait", "description": "Wait, endure, persist, or do nothing well: be the last to act, hold a pose, kill time, sustain an effort. The core act is patience or stamina rather than a discrete deed."},
+      {"name": "other", "description": "A clearly-described task that genuinely fits none of the activities above."},
+      {"name": "not_stated", "description": "The brief is too terse to tell what you actually do."}
+    ]
+  },
+
+  "judging_criterion": {
+    "_note": "Single-select. How the winner is decided — the measuring stick, not the activity. A 'make' task can be judged subjective-best OR fastest; keep this independent of activity_type.",
+    "type": "single-select",
+    "categories": [
+      {"name": "fastest", "description": "Ranked by speed: least time taken, or first to finish."},
+      {"name": "most-quantity", "description": "Ranked by amount or count: most items, biggest number, as much as possible."},
+      {"name": "furthest-or-highest", "description": "Ranked by distance, height, or extent of a single result: throw furthest, build tallest, travel furthest."},
+      {"name": "most-accurate", "description": "Ranked by precision or correctness: closest to a target, most right answers, neatest, least error."},
+      {"name": "subjective-best", "description": "Ranked by the Taskmaster's taste: 'best', 'most beautiful', 'most impressive'. A quality judgement, not a measurement."},
+      {"name": "funniest", "description": "Ranked on humour or entertainment value: 'funniest', 'most amusing'."},
+      {"name": "most-surprising", "description": "Ranked on surprise, originality, or unexpectedness: 'most surprising', 'most unexpected', 'most unusual'."},
+      {"name": "completion-binary", "description": "Pass/fail or did-you-manage-it: success is completing the task at all, not out-scoring others on a scale."},
+      {"name": "other", "description": "A clearly-stated basis for judging that fits none of the above."},
+      {"name": "not_stated", "description": "The brief doesn't say how it's judged."}
+    ]
+  },
+
+  "task_twist": {
+    "_note": "Multi-select LIST — most tasks return [] or one slug. Only add a slug when the brief makes the constraint explicit and central. Never invent slugs outside this list.",
+    "type": "multi-select",
+    "rule": "Return a JSON list of zero or more applicable slugs. If no twist applies, return []. Do not use 'not_stated' for this field.",
+    "categories": [
+      {"name": "time-limit", "description": "An explicit clock or countdown constrains the task ('you have 60 seconds', 'in 20 minutes')."},
+      {"name": "single-attempt", "description": "Exactly one go is allowed — no retries, one shot."},
+      {"name": "do-x-whilst-y", "description": "Two things must happen at once: do the main task whilst also doing or holding something else ('paint a horse whilst riding a horse')."},
+      {"name": "blindfold-sensory", "description": "A sense is deliberately removed: blindfolded, earmuffs, in the dark, can't see/hear."},
+      {"name": "body-restriction", "description": "Use of the body is restricted: no hands, one leg, tied up, can't use a named body part."},
+      {"name": "teamwork", "description": "The task is done as a team or pair rather than solo."},
+      {"name": "uses-alex", "description": "Alex Horne (or another helper) is a required part of the task — you direct, use, or depend on him."},
+      {"name": "secret-reveal", "description": "There's a hidden rule, secret instruction, or surprise twist revealed during or after the task."},
+      {"name": "members-of-public", "description": "Members of the public (strangers — not the contestants, Alex, or Greg) are involved."}
+    ]
+  },
+
+  "key_props": {
+    "_note": "Open list, HOVER-ONLY (never a colormap). The distinctive objects that give a task its flavour.",
+    "type": "open-list",
+    "rule": "Return a JSON list of up to 3 short noun phrases for the most notable physical objects, props, or materials the task centres on (e.g. ['watermelon'], ['horse','easel'], ['balloon','egg']). Lowercase, singular where natural. Return [] for tasks with no distinctive prop (pure mental or social tasks)."
+  }
+}

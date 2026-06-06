@@ -1,0 +1,42 @@
+[project]
+name = "taskmaster-map"
+version = "0.1.0"
+description = "Interactive semantic map of Taskmaster tasks, embedded from each task's brief"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "numpy>=1.24",
+    "requests>=2.28",
+    "tqdm>=4.60",
+    "python-dotenv>=1.0",
+    "scipy>=1.10",
+    "scikit-learn>=1.2",
+    "cohere>=7.0",
+    "umap-learn>=0.5.10",
+    "datamapplot>=0.5",
+    "toponymy>=0.5,<0.6",
+    "evoc>=0.1.3",
+    "fast-hdbscan==0.2.2",
+    "glasbey>=0.2",
+    "transformers>=4.40",
+    "anthropic>=0.40",
+    "nest-asyncio>=1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.14",
+    "pytest>=8.0",
+    "ipython>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
