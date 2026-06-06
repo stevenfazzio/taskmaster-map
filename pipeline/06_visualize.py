@@ -186,6 +186,30 @@ HOVER_TEMPLATE = (
 CUSTOM_JS = "datamap.deckgl.setProps({controller: {scrollZoom: {speed: 0.05, smooth: true}}});"
 CUSTOM_CSS = "#main-title { letter-spacing: -0.02em; line-height: 1.1 !important; color:#1f2328; }"
 
+# Attribution footer (bottom-right) — the data is CC BY-SA 4.0, so the published map
+# must credit its source on the page itself, not only in the README.
+ATTRIBUTION_HTML = (
+    '<div id="attribution" style="position:fixed;bottom:8px;right:12px;z-index:300;'
+    "font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:11px;color:#8b949e;"
+    "background:rgba(255,255,255,0.78);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);"
+    'padding:4px 9px;border-radius:8px;border:1px solid rgba(0,0,0,0.06);max-width:46vw;line-height:1.4;">'
+    'Data: <a href="https://taskmaster.fandom.com/" target="_blank" rel="noopener" '
+    'style="color:#57606a;">Taskmaster Wiki</a> via '
+    '<a href="https://github.com/silverdavi/taskmaster-uk-scores" target="_blank" rel="noopener" '
+    'style="color:#57606a;">silverdavi/taskmaster-uk-scores</a> · '
+    '<a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener" '
+    'style="color:#57606a;">CC BY-SA 4.0</a> · '
+    '<a href="https://github.com/stevenfazzio/taskmaster-map" target="_blank" rel="noopener" '
+    'style="color:#57606a;">source</a>'
+    "</div>"
+)
+
+
+def _inject_attribution(html_path) -> None:
+    """Inject the CC BY-SA attribution footer into the rendered map HTML."""
+    html = html_path.read_text()
+    html_path.write_text(html.replace("</body>", ATTRIBUTION_HTML + "\n</body>", 1))
+
 
 def main():
     crd = np.load(UMAP_COORDS_NPZ, allow_pickle=True)
@@ -358,6 +382,7 @@ def main():
         custom_css=CUSTOM_CSS,
     )
     plot.save(str(MAP_HTML))
+    _inject_attribution(MAP_HTML)
     print(f"Wrote {MAP_HTML} ({MAP_HTML.stat().st_size / 1e6:.1f} MB)")
 
     DOCS_HTML.write_text(MAP_HTML.read_text())
