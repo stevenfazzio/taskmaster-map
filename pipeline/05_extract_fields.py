@@ -301,10 +301,16 @@ def _validate(parsed, taxonomy, fields):
     return issues
 
 
-def aggregate(taxonomy, fields) -> pd.DataFrame:
+def aggregate(taxonomy, fields, corpus_task_ids) -> pd.DataFrame:
+    # Restrict to the current corpus so dropped tasks (e.g. deduped series) don't
+    # linger as orphaned cache entries in the output. Cache files for tasks no longer
+    # in task_rows.parquet are simply skipped (harmless to leave on disk).
+    corpus = {int(t) for t in corpus_task_ids}
     rows = []
     for p in sorted(STRUCTURED_FIELDS_CACHE_DIR.glob("*.json")):
         data = json.loads(p.read_text())
+        if int(data["task_id"]) not in corpus:
+            continue
         parsed, parse_err = _parse_json(data.get("raw_text"))
         issues = _validate(parsed, taxonomy, fields) if parsed else []
         row = {
@@ -364,6 +370,7 @@ def main():
 
     df = pd.read_parquet(TASK_ROWS_PARQUET, columns=["task_id", "embed_text", "task_format"])
     df = df[df.embed_text.notna() & (df.embed_text.str.len() > 0)].reset_index(drop=True)
+    corpus_task_ids = df["task_id"].tolist()  # full corpus; aggregate spans this, not the --limit sample
     if args.limit is not None:
         df = df.sample(n=min(args.limit, len(df)), random_state=SUBSET_SEED).reset_index(drop=True)
     print(f"Corpus: {len(df)} tasks")
@@ -372,7 +379,7 @@ def main():
         asyncio.run(_run_extractions(df, system))
         asyncio.run(_run_emoji(df))
 
-    aggregate(taxonomy, fields)
+    aggregate(taxonomy, fields, corpus_task_ids)
 
 
 if __name__ == "__main__":

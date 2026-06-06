@@ -58,6 +58,35 @@ def _task_format(row) -> str:
     return "Filmed"
 
 
+def _dedupe_identical_series(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse series whose ENTIRE task list is byte-identical to a kept series.
+
+    The upstream silverdavi dataset duplicates the single Jan-2026 New Year Treat
+    special as six identical series ('New Year Treat 1'..'6') — same tasks in the
+    same order, same cast, same scores. Keep the first occurrence of each distinct
+    series-content signature and drop the rest. This is safe for GENUINE same-brief
+    recurrences (e.g. the Series 2 & 3 'Buy a gift for the Taskmaster' prize task,
+    which live in different, non-identical series) — they never share a signature.
+    Self-healing: if upstream ever ships distinct New Year Treats, the signatures
+    differ and nothing is dropped.
+    """
+
+    def _sig(g: pd.DataFrame):
+        g = g.sort_values(["episode_num", "task_num"])
+        return tuple(zip(g["episode_num"].astype(str), g["task_num"].astype(str), g["description"]))
+
+    seen: dict = {}
+    keep: list = []
+    for series, g in df.groupby("series", sort=False):
+        key = _sig(g)
+        if key in seen:
+            print(f"  dropping duplicate series {series!r} ({len(g)} tasks, identical to {seen[key]!r})")
+        else:
+            seen[key] = series
+            keep.append(series)
+    return df[df["series"].isin(keep)].reset_index(drop=True)
+
+
 def main():
     tasks = pd.read_parquet(SOURCE_CSVS["tasks"])
     scores = pd.read_parquet(SOURCE_CSVS["scores_long"])
@@ -67,6 +96,12 @@ def main():
     df = tasks.copy()
     for c in ("is_prize", "is_live", "is_tiebreak"):
         df[c] = df[c].fillna(0).astype(int).astype(bool)
+
+    # Drop upstream series-level duplicates (the New Year Treat special, ingested 6x).
+    n_before = len(df)
+    df = _dedupe_identical_series(df)
+    if len(df) < n_before:
+        print(f"  deduped identical series: {n_before} -> {len(df)} tasks")
 
     # embed_text = the brief. Drop the tiny fraction with no description (nothing to embed).
     df["description"] = _norm(df["description"])

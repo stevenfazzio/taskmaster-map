@@ -25,7 +25,9 @@ PROJECT_TAGLINE = "Every Taskmaster task, laid out by what it asks you to do"
 
 # --- Stage 00: fetch Taskmaster data ---
 # silverdavi/taskmaster-uk-scores: wiki-derived CSVs (CC BY-SA 4.0), Series 1-20
-# + Champion of Champions + New Year Treats. ~1,045 tasks with brief text + scores.
+# + Champion of Champions + New Year Treat. ~1,045 raw task rows with brief text +
+# scores; upstream duplicates the single New Year Treat special as 6 identical series,
+# which stage 01 collapses -> 990 tasks (see _dedupe_identical_series there).
 # Pinned to a commit so re-fetches are reproducible. The dict key doubles as the
 # upstream CSV stem (data/<stem>.csv); the value is our local parquet.
 SOURCE_REPO = "silverdavi/taskmaster-uk-scores"

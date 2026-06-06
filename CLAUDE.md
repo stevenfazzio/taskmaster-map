@@ -23,6 +23,7 @@ filter pattern** — the reference for filtering on DataMapPlot).
 ## Conventions
 
 - `task_id` is the alignment key across **every** stage — always merge/reindex on it (`06` does `set_index("task_id").reindex(order)` so row i ↔ `coords[i]`).
+- **Corpus is 990 tasks, not the ~1,045 raw rows.** Upstream duplicates the single New Year Treat special as six identical series (`New Year Treat 1`..`6`); `01`'s `_dedupe_identical_series` collapses any byte-identical series to one, keeping genuine same-brief recurrences like Series 2 & 3 "Buy a gift for the Taskmaster" (different casts). `05`'s `aggregate` is corpus-scoped so dropped tasks don't linger as orphaned cache rows.
 - **Atomic writes everywhere**: tempfile in the same dir → verify → `os.replace`. Mirror this for any new output.
 - API keys come from **environment variables**, not `.env` files (`config.py` only loads `PROJECT_ROOT/.env` if it happens to exist). Don't recreate `~/.config/data-apis/.env`; never read/echo secrets.
 - Plain `.py` scripts, HTML visual output, `uv`/`ruff` (line-length 120, rules E/F/I) — see the global `~/.claude/CLAUDE.md`.
