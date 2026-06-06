@@ -34,7 +34,7 @@ PROJECT_TITLE = "The Taskmaster Task Map"
 _UNKNOWN_VALUES = {"", "Unknown", "Other", "Not Stated", "not_stated", "other", "—", "None"}
 
 # Nicer display labels for slugs whose auto-prettified form reads awkwardly.
-_DISPLAY_OVERRIDES = {"deceive-alex-or-greg": "Deceive Alex/Greg"}
+_DISPLAY_OVERRIDES = {}  # slug -> nicer label, for any slug whose auto-prettified form reads awkwardly
 
 # Fixed palette for task_format — the card's headline pill and the "Task type"
 # colormap share it, so the pill colour matches the map when coloured by type.
