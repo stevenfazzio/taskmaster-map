@@ -14,6 +14,13 @@ prompt + data/emoji_cache/, merged in as the `task_emoji` column). Keeping it
 separate from the taxonomy call preserves the tuned wit and means a rerun after
 the taxonomy is cached regenerates only the cheap emoji.
 
+A third pass classifies which of the 16 filter motifs (motifs.py) each task
+involves (own prompt + data/motif_cache/, merged in as `motif_tags`), decoupled
+from the gist so tuning a motif boundary disturbs neither taxonomy nor emoji. A
+final reconcile step keeps the gist and the filter buttons consistent: a concrete
+glyph the classifier missed adds its motif; a metaphor-prone glyph the classifier
+rejected is stripped from the gist (see motifs.STRIP_POLICY_KEYS).
+
 Validate first on a sample (`--limit 50`), eyeball the tags, then run the full set
 (the sample's cached results are reused). Opus 4.8 takes no `temperature`, so the
 call is just model + max_tokens + system (cached) + messages.
@@ -42,12 +49,15 @@ from config import (
     EXTRACT_CONCURRENCY,
     EXTRACT_MAX_RETRIES,
     EXTRACT_MAX_TOKENS,
+    MOTIF_CACHE_DIR,
+    MOTIF_MAX_TOKENS,
     STRUCTURED_FIELDS_CACHE_DIR,
     STRUCTURED_FIELDS_PARQUET,
     SUBSET_SEED,
     TASK_ROWS_PARQUET,
     TAXONOMY_JSON,
 )
+from motifs import GLYPH_TO_KEY, MOTIF_KEYS, MOTIFS, STRIP_POLICY_KEYS
 from tqdm import tqdm
 
 
@@ -181,10 +191,12 @@ async def _run_extractions(rows: pd.DataFrame, system: str) -> None:
 # A separate, single-purpose call: the taxonomy prompt above classifies; this one
 # performs. Bundling the two dilutes the wit, so the emoji gets its own prompt and
 # its own cache — a rerun regenerates only the emoji once the taxonomy is cached.
+# The literal-use guardrail below is built from motifs.py so it can't drift from the classifier.
+_MOTIF_GUARDRAIL = " · ".join(f"{m['glyph']} {m['sense']}" for m in MOTIFS)
 EMOJI_SYSTEM = (
     "You produce a short emoji summary of a task from the comedy panel show Taskmaster — "
     "a glanceable, witty visual gist. These tasks are deliberately silly; the emoji should be "
-    "playful, and visual puns are welcome (e.g. 🥊 for a 'hole punch').\n\n"
+    "playful, and visual puns are welcome (e.g. 🕳️🥊 for a 'hole punch').\n\n"
     "Use 2-4 emoji, most evocative first, capturing in priority order: (1) the funniest or most "
     "defining element, (2) the core action + key object, (3) a memorable twist, constraint, or count. "
     "Add a 3rd/4th emoji ONLY when it adds a DISTINCT meaningful element — never a duplicate, a "
@@ -194,6 +206,11 @@ EMOJI_SYSTEM = (
     "(🤯 extraordinary, 😬 awkward, 🤑 expensive, 🪞 narcissistic) rather than a generic 🎁.\n"
     "- Avoid filler (✨ 🤔 ❓) and generic 🎁 unless genuinely the best fit.\n"
     "- Prefer specific, recognisable emoji over vague ones.\n"
+    "- These 16 glyphs are filter-button icons, so use each ONLY in the sense given here, never as "
+    "a metaphor (so a button never contradicts a gist it appears in):\n"
+    f"  {_MOTIF_GUARDRAIL}.\n"
+    "Every OTHER emoji is free to be punny or metaphorical — 🎩 for 'posh', 🪖 for 'a soldier' — "
+    "only these 16 are reserved for these senses.\n"
     "- Reply with ONLY the emoji — no words, no spaces, no explanation.\n\n"
     "Examples (style/length, not content):\n"
     "- 'Eat as much watermelon as possible.' -> 🍉😋\n"
@@ -263,6 +280,109 @@ async def _run_emoji(rows: pd.DataFrame) -> None:
         await coro
 
 
+# ── motif-tag pass ──────────────────────────────────────────────────────────
+# A third single-purpose call, fully decoupled from the witty gist: it classifies which of the
+# 16 filter motifs (motifs.py) a task CENTRALLY involves, from the brief alone. Own prompt + cache
+# so tuning a motif boundary doesn't disturb the cached taxonomy or emoji. Drives the 06 buttons.
+MOTIF_SYSTEM = (
+    "You tag a task from the British comedy panel show Taskmaster with which of 16 recurring "
+    "motifs it CENTRALLY involves — these power the site's filter buttons. A motif applies only "
+    "when it is a core element of what the task asks, never an incidental mention or a forbidden "
+    "side-effect ('do not break the vase' is NOT the smash motif). A task may match several "
+    "motifs, or none. For abstract 'best/most X' prize tasks, tag a motif only if the judged "
+    "quality IS that motif (heaviest -> weigh; sturdiest -> none). Do NOT tag music, film, or art "
+    "merely because a task is a 'performance' or 'present X' — tag music only for ACTUAL music or "
+    "singing, film only for actual filming/video or acting a scripted scene, art only for actual "
+    "drawing/painting/sculpture.\n\n"
+    "MOTIFS — tag the key when its rule fits:\n"
+    + "\n".join(f"  {m['key']}: {m['definition']}" for m in MOTIFS)
+    + "\n\nReply with ONLY the applicable keys, space-separated, lowercase, drawn from this exact "
+    "list:\n  " + " ".join(MOTIF_KEYS) + "\nIf none apply, reply with the single word: none."
+)
+
+
+async def _motif_one(client, sem, task_id, brief) -> str | None:
+    last_err = None
+    valid = set(MOTIF_KEYS)
+    for attempt in range(EXTRACT_MAX_RETRIES):
+        try:
+            async with sem:
+                resp = await client.messages.create(
+                    model=ANTHROPIC_MODEL_EXTRACT,
+                    max_tokens=MOTIF_MAX_TOKENS,
+                    system=[{"type": "text", "text": MOTIF_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                    messages=[{"role": "user", "content": f"Task brief:\n{brief}"}],
+                )
+            text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").lower()
+            tags = [w for w in re.split(r"[^a-z_]+", text) if w in valid]
+            return " ".join(dict.fromkeys(tags))  # dedupe, keep order; "" when none apply
+        except Exception as e:  # noqa: BLE001 — one bad task shouldn't crash the batch
+            last_err = e
+            if attempt < EXTRACT_MAX_RETRIES - 1:
+                await asyncio.sleep(min(2**attempt * 2, 30))
+    print(f"  motif failed for {task_id}: {type(last_err).__name__}: {last_err}")
+    return None  # not cached (see _run_motif) so a later rerun retries it
+
+
+def _load_motif(task_id) -> str:
+    p = MOTIF_CACHE_DIR / f"{_safe_filename(task_id)}.txt"
+    return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+
+
+def _save_motif(task_id, tags: str) -> None:
+    out_path = MOTIF_CACHE_DIR / f"{_safe_filename(task_id)}.txt"
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=MOTIF_CACHE_DIR, suffix=".txt.tmp")
+    os.close(tmp_fd)
+    try:
+        Path(tmp_path).write_text(tags, encoding="utf-8")
+        os.replace(tmp_path, out_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
+async def _run_motif(rows: pd.DataFrame) -> None:
+    client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    sem = asyncio.Semaphore(EXTRACT_CONCURRENCY)
+
+    todo = []
+    for _, row in rows.iterrows():
+        if (MOTIF_CACHE_DIR / f"{_safe_filename(row['task_id'])}.txt").exists():
+            continue
+        todo.append((row["task_id"], row["embed_text"]))
+    print(f"{len(todo)} motif tags to generate ({len(rows) - len(todo)} already cached)")
+    if not todo:
+        return
+
+    async def _do(task_id, brief):
+        tags = await _motif_one(client, sem, task_id, brief)
+        if tags is not None:  # cache successes incl. a genuine empty 'none'; failures retry
+            _save_motif(task_id, tags)
+
+    tasks = [_do(tid, b) for tid, b in todo]
+    for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="motif"):
+        await coro
+
+
+def _reconcile_motifs(emoji: str, tags: str) -> tuple[str, str]:
+    # Reconcile the witty gist's glyphs with the classifier's tags so a filter button and the gist
+    # it appears in never contradict each other. For a glyph present in the gist but NOT tagged:
+    #   - concrete glyph (egg, clothing, ...): ADD the tag — the classifier missed a literal use.
+    #   - metaphor-prone glyph (STRIP_POLICY_KEYS): STRIP it from the gist — the appearance is almost
+    #     always metaphorical (target for "match", burst for "wow"), so trust the classifier.
+    # Variation selectors are dropped for the membership test so the scales glyph matches a bare one.
+    out_tags = tags.split()
+    out_emoji = emoji or ""
+    for glyph, key in GLYPH_TO_KEY.items():
+        if glyph.replace("\ufe0f", "") in out_emoji.replace("\ufe0f", "") and key not in out_tags:
+            if key in STRIP_POLICY_KEYS:
+                out_emoji = out_emoji.replace(glyph + "\ufe0f", "").replace(glyph, "")
+            else:
+                out_tags.append(key)
+    return out_emoji, " ".join(out_tags)
+
+
 def _parse_json(raw_text):
     if raw_text is None:
         return None, "no_raw_text"
@@ -327,7 +447,13 @@ def aggregate(taxonomy, fields, corpus_task_ids) -> pd.DataFrame:
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    df["task_emoji"] = [_load_emoji(t) for t in df["task_id"]]
+    raw_emoji = [_load_emoji(t) for t in df["task_id"]]
+    raw_motifs = [_load_motif(t) for t in df["task_id"]]
+    reconciled = [_reconcile_motifs(e, m) for e, m in zip(raw_emoji, raw_motifs)]
+    df["task_emoji"] = [e for e, _ in reconciled]
+    df["motif_tags"] = [t for _, t in reconciled]
+    n_added = sum(len(t.split()) > len(rm.split()) for (_, t), rm in zip(reconciled, raw_motifs))
+    n_stripped = sum(e != re_ for (e, _), re_ in zip(reconciled, raw_emoji))
     tmp_fd, tmp_path = tempfile.mkstemp(dir=STRUCTURED_FIELDS_PARQUET.parent, suffix=".parquet.tmp")
     os.close(tmp_fd)
     try:
@@ -345,6 +471,8 @@ def aggregate(taxonomy, fields, corpus_task_ids) -> pd.DataFrame:
     print(f"  Parse errors:      {df['parse_error'].notna().sum()}")
     print(f"  Validation issues: {df['validation_issues'].notna().sum()}")
     print(f"  emoji present:     {(df['task_emoji'].str.len() > 0).sum()} / {len(df)}")
+    print(f"  motif tags present:{(df['motif_tags'].str.len() > 0).sum()} / {len(df)}")
+    print(f"  reconcile:         +{n_added} tags added (concrete glyphs), {n_stripped} orphan glyphs stripped")
     for f in fields:
         if taxonomy[f]["type"] == "single-select":
             print(f"  {f}: {df[f].value_counts().to_dict()}")
@@ -361,6 +489,7 @@ def main():
 
     STRUCTURED_FIELDS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     EMOJI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    MOTIF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if not ANTHROPIC_API_KEY and not args.aggregate_only:
         raise SystemExit("ANTHROPIC_API_KEY not set")
 
@@ -378,6 +507,7 @@ def main():
     if not args.aggregate_only:
         asyncio.run(_run_extractions(df, system))
         asyncio.run(_run_emoji(df))
+        asyncio.run(_run_motif(df))
 
     aggregate(taxonomy, fields, corpus_task_ids)
 

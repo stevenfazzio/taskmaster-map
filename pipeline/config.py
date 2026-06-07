@@ -90,6 +90,11 @@ STRUCTURED_FIELDS_CACHE_DIR = DATA_DIR / "structured_fields_cache"  # per-task J
 EMOJI_CACHE_DIR = DATA_DIR / "emoji_cache"  # per-task .txt, resumable
 EMOJI_MAX_TOKENS = 64  # ceiling only; output is ≤4 emoji, headroom for any adaptive thinking
 
+# Motif tags: a third single-purpose pass (its own prompt + cache) classifying which of the
+# 16 filter motifs each task involves — decoupled from the witty gist, drives the filter buttons.
+MOTIF_CACHE_DIR = DATA_DIR / "motif_cache"  # per-task .txt (space-separated motif keys), resumable
+MOTIF_MAX_TOKENS = 128  # ceiling only; output is a short key list, headroom for adaptive thinking
+
 # --- Stage 06: DataMapPlot visualization ---
 MAP_HTML = DATA_DIR / "task_map.html"
 DOCS_HTML = DOCS_DIR / "index.html"

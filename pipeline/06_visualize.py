@@ -28,6 +28,7 @@ from config import (
     TOPONYMY_LABELS_PARQUET,
     UMAP_COORDS_NPZ,
 )
+from motifs import MOTIFS
 
 PROJECT_TITLE = "The Taskmaster Task Map"
 
@@ -173,19 +174,15 @@ HOVER_TEMPLATE = (
     "</div>"
 )
 
-# Emoji "browse by motif" strip: 16 single-glyph buttons under the search box. Each
-# button just fills the native search input with its emoji (which hides every task
-# that doesn't carry that glyph) — so it reuses DataMapPlot's own search; the only
-# new code is the grid + click wiring. Single-select: click the active one to clear.
+# Motif filter strip: 16 single-glyph buttons under the search box, generated from motifs.py.
+# Each button matches tasks whose `motif_tags` (LLM-classified in stage 05, space-separated keys)
+# contain its motif key — NOT by gist substring. It registers its own "emoji-filter" selection on
+# the dataSelectionManager, which intersects it with the text search. Single-select: click to clear.
+# Buttons are [glyph, label, key]; __BUTTONS__ is injected below from MOTIFS.
 EMOJI_STRIP_JS = """
 (function () {
   const BUTTONS = [
-    ["\\uD83E\\uDD5A", "egg"], ["\\uD83C\\uDF88", "balloon"], ["\\uD83E\\uDD86", "duck"],
-    ["\\uD83E\\uDD65", "coconut"], ["\\uD83E\\uDDFB", "loo roll"], ["\\uD83D\\uDDD1\\uFE0F", "wheelie bin"],
-    ["\\uD83D\\uDC55", "clothing"], ["\\uD83C\\uDFA9", "hats"], ["\\uD83C\\uDF81", "present"],
-    ["\\uD83C\\uDFB5", "song"], ["\\uD83C\\uDFAC", "film"], ["\\uD83D\\uDCA5", "smash"],
-    ["\\uD83E\\uDD22", "gross"], ["\\uD83D\\uDE48", "hide / blindfold"], ["\\uD83E\\uDD2B", "silent"],
-    ["\\u2696\\uFE0F", "balancing"]
+__BUTTONS__
   ];
   function build() {
     const sc = document.getElementById("search-container");
@@ -207,13 +204,14 @@ EMOJI_STRIP_JS = """
       if (!active) {
         try { dm.removeSelection("emoji-filter"); } catch (e) {}
       } else {
-        const te = (dm.metaData && dm.metaData.task_emoji) || [];
+        const mt = (dm.metaData && dm.metaData.motif_tags) || [];
         const idx = [];
-        for (let i = 0; i < te.length; i++) { if ((te[i] || "").indexOf(active) !== -1) { idx.push(i); } }
+        const needle = " " + active + " ";
+        for (let i = 0; i < mt.length; i++) { if ((" " + (mt[i] || "") + " ").indexOf(needle) !== -1) { idx.push(i); } }
         dm.addSelection(idx, "emoji-filter");
       }
       strip.querySelectorAll(".emoji-btn").forEach(function (b) {
-        b.classList.toggle("active", b.dataset.emoji === active);
+        b.classList.toggle("active", b.dataset.motif === active);
       });
     }
     BUTTONS.forEach(function (pair) {
@@ -223,9 +221,9 @@ EMOJI_STRIP_JS = """
       b.textContent = pair[0];
       b.title = pair[1];
       b.setAttribute("aria-label", pair[1]);
-      b.dataset.emoji = pair[0];
+      b.dataset.motif = pair[2];
       b.addEventListener("click", function () {
-        active = (active === pair[0]) ? "" : pair[0];
+        active = (active === pair[2]) ? "" : pair[2];
         apply();
       });
       grid.appendChild(b);
@@ -291,6 +289,13 @@ EMOJI_STRIP_JS = """
   build();
 })();
 """
+
+# Single source of truth: build the strip's [glyph, label, key] rows from motifs.py.
+_MOTIF_BUTTONS_JS = ",\n".join(
+    f"    [{json.dumps(m['glyph'], ensure_ascii=False)}, {json.dumps(m['label'])}, {json.dumps(m['key'])}]"
+    for m in MOTIFS
+)
+EMOJI_STRIP_JS = EMOJI_STRIP_JS.replace("__BUTTONS__", _MOTIF_BUTTONS_JS)
 
 CUSTOM_JS = "datamap.deckgl.setProps({controller: {scrollZoom: {speed: 0.05, smooth: true}}});\n" + EMOJI_STRIP_JS
 
@@ -408,6 +413,8 @@ def main():
     ]
     # key_props is still extracted (stage 05) but no longer shown — the emoji gist replaced it.
     emoji_disp = [escape(str(e)) for e in df["task_emoji"].fillna("")]
+    # Space-separated motif keys (stage 05) — drives the filter strip; never shown in the card.
+    motif_tags_disp = [str(t) for t in df["motif_tags"].fillna("")]
     winner_disp = [_dim_cell(w) for w in df["winner"].fillna("").values]
 
     contestants_list = [_maybe_json_list(v) for v in df["contestants"].values]
@@ -432,6 +439,7 @@ def main():
         {
             "series_ep": series_ep,
             "task_emoji": emoji_disp,
+            "motif_tags": motif_tags_disp,
             "brief": brief,
             "type_pill": type_pill,
             "activity": activity_disp,

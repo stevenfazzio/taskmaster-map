@@ -18,12 +18,13 @@ filter pattern** — the reference for filtering on DataMapPlot).
 - `make install` (`uv sync --extra dev`), `make lint` (`ruff check . && ruff format --check .`), `make format`, `make test`.
 - Run a stage: `uv run python pipeline/0X_*.py` (ordered 00→06; each reads the prior stage's parquet/npz — see README).
 - **Re-render only** (the common iterate step after editing the viz/hover/strip): `uv run python pipeline/06_visualize.py` → writes `data/task_map.html` + `docs/index.html`. Does NOT re-run the LLM stages.
-- `05_extract_fields.py` takes `--limit N` (random sample) and `--aggregate-only`. Per-task caches in `data/structured_fields_cache/` (taxonomy) and `data/emoji_cache/` (emoji gist) make it resumable; only successes are cached, so reruns retry failures. Delete a cache dir to force re-extraction.
+- `05_extract_fields.py` runs **three** per-task LLM passes, each with its own cache so tuning one doesn't disturb the others: `data/structured_fields_cache/` (taxonomy JSON), `data/emoji_cache/` (emoji gist `.txt`), `data/motif_cache/` (filter `motif_tags` `.txt`). Takes `--limit N` (random sample) and `--aggregate-only`. Only successes are cached, so reruns retry failures; delete a cache dir to force re-extraction (changing a prompt does NOT auto-invalidate — the prompt isn't in the cache key).
 
 ## Conventions
 
 - `task_id` is the alignment key across **every** stage — always merge/reindex on it (`06` does `set_index("task_id").reindex(order)` so row i ↔ `coords[i]`).
 - **Corpus is 990 tasks, not the ~1,045 raw rows.** Upstream duplicates the single New Year Treat special as six identical series (`New Year Treat 1`..`6`); `01`'s `_dedupe_identical_series` collapses any byte-identical series to one, keeping genuine same-brief recurrences like Series 2 & 3 "Buy a gift for the Taskmaster" (different casts). `05`'s `aggregate` is corpus-scoped so dropped tasks don't linger as orphaned cache rows.
+- **Filter motifs live in `pipeline/motifs.py`** — the single source of truth (`glyph/key/label/sense/definition`) for the 16 filter buttons, driving `05`'s gist guardrail, `05`'s `motif_tags` classifier (3rd pass), `06`'s buttons, and the reconcile step. **The strip matches the LLM `motif_tags` classification, NOT gist substrings** (the gist is decoupled, free to be witty). The gist's literal-16 guardrail keeps the 16 button glyphs literal-only; `05`'s `_reconcile_motifs` then keeps gist↔button consistent: a concrete glyph the classifier missed **adds** its tag, while a metaphor-prone glyph it rejected (`STRIP_POLICY_KEYS` = 🎯 throwing, 💥 smash, 🤫 silent, 🙈 hidden) is **stripped from the gist**. So a button never highlights a task whose gist visibly shows a *different* meaning of its glyph.
 - **Atomic writes everywhere**: tempfile in the same dir → verify → `os.replace`. Mirror this for any new output.
 - API keys come from **environment variables**, not `.env` files (`config.py` only loads `PROJECT_ROOT/.env` if it happens to exist). Don't recreate `~/.config/data-apis/.env`; never read/echo secrets.
 - Plain `.py` scripts, HTML visual output, `uv`/`ruff` (line-length 120, rules E/F/I) — see the global `~/.claude/CLAUDE.md`.
@@ -54,10 +55,13 @@ Place-naming, not document classification. `Unlabelled` = "unnamed region at thi
 ## Feature set (in the code)
 
 Hover card with an Opus-generated **emoji gist** (stage 05) above the brief; 4
-colormaps (Task type, Activity, Judged on, Air date); a **16-emoji filter strip**
-below the search box (single-select, composes with text search by intersection);
+colormaps (Task type, Activity, Judged on, Air date); a **16-motif filter strip**
+below the search box (single-select, composes with text search by intersection) —
+each button is a glyph from `motifs.py` matching the LLM `motif_tags`, not the gist;
 and a live **"N tasks"** caption that turns red **"No matches"** and blanks the map
-when a filter combination matches zero.
+when a filter combination matches zero. Motif precision is good for concrete glyphs
+and ~70–75% for the broad ones (music still over-tags some performance tasks);
+residual edge FPs are inherent to Opus-no-temperature classification.
 
 **Deferred:** rewrite the title subtitle (the count caption now carries the task
 total, freeing the subtitle to be purely descriptive); optionally hide region
