@@ -10,21 +10,21 @@ An interactive 2D semantic map of every UK Taskmaster task — **one dot = one
 task**, laid out by what each task asks you to do. Spine: fetch → embed (Cohere) →
 UMAP → label (Toponymy + Opus) → LLM field-extract (Opus) → render (DataMapPlot) →
 GitHub Pages. Sibling of `../jeopardy-map` (the lean spine) and
-`../huggingface-dataset-map` (LLM extraction + rich hover card + **the composable
-filter pattern** — the reference for filtering on DataMapPlot).
+`../huggingface-dataset-map` (LLM extraction + rich hover card). This map
+deliberately has **no custom filter UI** — it stays on DataMapPlot's public API
+(see "Feature set" below for why).
 
 ## Commands
 
 - `make install` (`uv sync --extra dev`), `make lint` (`ruff check . && ruff format --check .`), `make format`, `make test`.
 - Run a stage: `uv run python pipeline/0X_*.py` (ordered 00→06; each reads the prior stage's parquet/npz — see README).
-- **Re-render only** (the common iterate step after editing the viz/hover/strip): `uv run python pipeline/06_visualize.py` → writes `data/task_map.html` + `docs/index.html`. Does NOT re-run the LLM stages.
-- `05_extract_fields.py` runs **three** per-task LLM passes, each with its own cache so tuning one doesn't disturb the others: `data/structured_fields_cache/` (taxonomy JSON), `data/emoji_cache/` (emoji gist `.txt`), `data/motif_cache/` (filter `motif_tags` `.txt`). Takes `--limit N` (random sample) and `--aggregate-only`. Only successes are cached, so reruns retry failures; delete a cache dir to force re-extraction (changing a prompt does NOT auto-invalidate — the prompt isn't in the cache key).
+- **Re-render only** (the common iterate step after editing the viz/hover): `uv run python pipeline/06_visualize.py` → writes `data/task_map.html` + `docs/index.html`. Does NOT re-run the LLM stages.
+- `05_extract_fields.py` runs **two** per-task LLM passes, each with its own cache so tuning one doesn't disturb the other: `data/structured_fields_cache/` (taxonomy JSON) and `data/emoji_cache/` (emoji gist `.txt`). (`data/motif_cache/` on disk is a leftover from the removed motif filter; nothing reads it.) Takes `--limit N` (random sample) and `--aggregate-only`. Only successes are cached, so reruns retry failures; delete a cache dir to force re-extraction (changing a prompt does NOT auto-invalidate — the prompt isn't in the cache key).
 
 ## Conventions
 
 - `task_id` is the alignment key across **every** stage — always merge/reindex on it (`06` does `set_index("task_id").reindex(order)` so row i ↔ `coords[i]`).
 - **Corpus is 990 tasks, not the ~1,045 raw rows.** Upstream duplicates the single New Year Treat special as six identical series (`New Year Treat 1`..`6`); `01`'s `_dedupe_identical_series` collapses any byte-identical series to one, keeping genuine same-brief recurrences like Series 2 & 3 "Buy a gift for the Taskmaster" (different casts). `05`'s `aggregate` is corpus-scoped so dropped tasks don't linger as orphaned cache rows.
-- **Filter motifs live in `pipeline/motifs.py`** — the single source of truth (`glyph/key/label/sense/definition`) for the 16 filter buttons, driving `05`'s gist guardrail, `05`'s `motif_tags` classifier (3rd pass), `06`'s buttons, and the reconcile step. **The strip matches the LLM `motif_tags` classification, NOT gist substrings** (the gist is decoupled, free to be witty). The gist's literal-16 guardrail keeps the 16 button glyphs literal-only; `05`'s `_reconcile_motifs` then keeps gist↔button consistent: a concrete glyph the classifier missed **adds** its tag, while a metaphor-prone glyph it rejected (`STRIP_POLICY_KEYS` = 🎯 throwing, 💥 smash, 🤫 silent, 🙈 hidden) is **stripped from the gist**. So a button never highlights a task whose gist visibly shows a *different* meaning of its glyph.
 - **Atomic writes everywhere**: tempfile in the same dir → verify → `os.replace`. Mirror this for any new output.
 - API keys come from **environment variables**, not `.env` files (`config.py` only loads `PROJECT_ROOT/.env` if it happens to exist). Don't recreate `~/.config/data-apis/.env`; never read/echo secrets.
 - Plain `.py` scripts, HTML visual output, `uv`/`ruff` (line-length 120, rules E/F/I) — see the global `~/.claude/CLAUDE.md`.
@@ -36,12 +36,8 @@ filter pattern** — the reference for filtering on DataMapPlot).
 
 ## DataMapPlot gotchas (most of these cost real debugging)
 
-- **The UI layer is `pointer-events: none`** (so the deck.gl canvas gets pan/zoom); only `.interactive-element` re-enables clicks. Custom controls must carry `container-box interactive-element` — which also gives the matching box chrome (shadow / 16px radius / `8px 16px` inset margin / 12px padding). A programmatic `.click()` bypasses this, so test *real* clicks with `read_page` → `computer.left_click` by `ref`.
-- **Point/hover data is encoded into the HTML, not greppable.** Verify rendered output at runtime via `datamap.metaData.<field>` in the browser, not by grepping `docs/index.html`. (CSS/JS identifiers like `emoji-strip` ARE greppable — use them as deploy markers.)
-- **Native search is whole-query substring match with a "0 matches → show ALL" fallback** — NOT token-AND. You can't compose filters by joining query strings.
-- **Composable filters use `datamap.dataSelectionManager`**: `addSelection(indices, filterId)` / `removeSelection(filterId)`; the manager **intersects** all active filters. Native text search registers under `datamap.searchItemId` (`"text-search"`); the emoji strip registers `"emoji-filter"` — so they compose by intersection without touching each other's state. (Mirrors `../huggingface-dataset-map/pipeline/filter_panel.html`.)
-- **Blank-on-empty:** because empty selection → show-all, a zero-match combo shows everything. Fix (from the HF filter panel): monkey-patch `highlightPoints` so that when `selectedIndicesByItem` is non-empty but `getSelectedIndices().size === 0`, do `dm.selected.fill(-1)` then re-clone the point layer + `deckgl.setProps({layers})` to force the blank. Our map has `pointRadiusMin/MaxPixels`, so keep the radius-preserving clone.
-- **`window.datamap` / `dm.selected` aren't ready at strip-build time.** The strip builds as soon as `#search-container` exists, which can precede `dm.selected` being populated; reading it then throws a *silent* load-time exception (the console tracker misses it). Read `window.datamap` **lazily** inside update functions, with a retry — don't capture at build time.
+- **Point/hover data is encoded into the HTML, not greppable.** Verify rendered output at runtime via `datamap.metaData.<field>` in the browser, not by grepping `docs/index.html`. (CSS/JS strings like `scrollZoom` or the attribution footer ARE greppable — use them as deploy markers.)
+- **Native search is whole-query, case-insensitive substring match with a "0 matches → show ALL" fallback** — NOT token-AND. The index is `06`'s `search_text` (brief, series, contestants, winner, episode title, twist labels); anything added there is matched as a raw substring, so short category words pollute ordinary queries.
 
 ## Toponymy (stage 04)
 
@@ -50,20 +46,24 @@ Place-naming, not document classification. `Unlabelled` = "unnamed region at thi
 ## Local preview & deploy
 
 - **Preview:** serve `data/` over HTTP and open the `http://127.0.0.1` URL — never `file://` (the Chrome extension rewrites it to `https://file://` and fails). `python3 -m http.server <port> --bind 127.0.0.1 --directory data` then `http://127.0.0.1:<port>/task_map.html`.
-- **Deploy:** GitHub Pages serves `/docs` on `main`; `06` writes `docs/index.html`, so a commit + `git push` redeploys (~15s). Live: <https://stevenfazzio.github.io/taskmaster-map/>. Verify with a greppable-marker poll (`curl … | grep emoji-strip`). Data is CC BY-SA 4.0 → keep the attribution footer (`ATTRIBUTION_HTML` in `06`). Commit/push only when asked.
+- **Deploy:** GitHub Pages serves `/docs` on `main`; `06` writes `docs/index.html`, so a commit + `git push` redeploys (~15s). Live: <https://stevenfazzio.github.io/taskmaster-map/>. Verify with a greppable-marker poll (`curl … | grep <marker>`). Data is CC BY-SA 4.0 → keep the attribution footer (`ATTRIBUTION_HTML` in `06`). Commit/push only when asked.
 
 ## Feature set (in the code)
 
 Hover card with an Opus-generated **emoji gist** (stage 05) above the brief; 4
-colormaps (Task type, Activity, Judged on, Air date); a **16-motif filter strip**
-below the search box (single-select, composes with text search by intersection) —
-each button is a glyph from `motifs.py` matching the LLM `motif_tags`, not the gist;
-and a live **"N tasks"** caption that turns red **"No matches"** and blanks the map
-when a filter combination matches zero. Motif precision is good for concrete glyphs
-and ~70–75% for the broad ones (music still over-tags some performance tasks);
-residual edge FPs are inherent to Opus-no-temperature classification.
+colormaps (Task type, Activity, Judged on, Air date) whose legends select by
+category; native text search over the brief, contestants, episode title and
+**twist labels** (so "teamwork", "time limit", "body restriction" find those
+tasks — twist is multi-valued, so it gets search rather than a colormap).
 
-**Deferred:** rewrite the title subtitle (the count caption now carries the task
-total, freeing the subtitle to be purely descriptive); optionally hide region
-labels on the blank zero-state; the long-deferred extras (contestant dropdown,
-random-task button, shareable deep-links, methodology page).
+**Removed 2026-10-18, on purpose:** a 16-glyph motif filter strip (LLM `motif_tags`
+pass + `motifs.py`), a live "N tasks" caption, and a blank-on-zero-matches patch.
+They depended on DataMapPlot internals (`dataSelectionManager`, a monkey-patched
+`highlightPoints`, `pointLayer.clone`) and were the map's main breakage risk.
+Search can't fully replace the motifs (briefs are short — most motifs were only
+20–40% findable by an obvious keyword), and that was accepted. Don't re-add custom
+filter UI here without discussing it; the pattern lives in
+`../huggingface-dataset-map/pipeline/filter_panel.html`.
+
+**Deferred:** rewrite the title subtitle; the long-deferred extras (contestant
+dropdown, random-task button, shareable deep-links, methodology page).

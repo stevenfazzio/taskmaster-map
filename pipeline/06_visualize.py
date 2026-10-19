@@ -28,7 +28,6 @@ from config import (
     TOPONYMY_LABELS_PARQUET,
     UMAP_COORDS_NPZ,
 )
-from motifs import MOTIFS
 
 PROJECT_TITLE = "The Taskmaster Task Map"
 
@@ -174,167 +173,10 @@ HOVER_TEMPLATE = (
     "</div>"
 )
 
-# Motif filter strip: 16 single-glyph buttons under the search box, generated from motifs.py.
-# Each button matches tasks whose `motif_tags` (LLM-classified in stage 05, space-separated keys)
-# contain its motif key — NOT by gist substring. It registers its own "emoji-filter" selection on
-# the dataSelectionManager, which intersects it with the text search. Single-select: click to clear.
-# Buttons are [glyph, label, key]; __BUTTONS__ is injected below from MOTIFS.
-EMOJI_STRIP_JS = """
-(function () {
-  const BUTTONS = [
-__BUTTONS__
-  ];
-  function build() {
-    const sc = document.getElementById("search-container");
-    const dm = window.datamap;
-    if (!sc || !dm) { return setTimeout(build, 120); }
-    if (document.getElementById("emoji-strip")) { return; }
-    const strip = document.createElement("div");
-    strip.id = "emoji-strip";
-    strip.className = "container-box interactive-element";  // match the other UI boxes (shadow/inset/pointer-events)
-    const grid = document.createElement("div");
-    grid.className = "emoji-grid";
-    let active = "";
-    // The emoji filter is its OWN selection (filterId "emoji-filter"), independent of
-    // the text-search box. DataMapPlot's dataSelectionManager intersects it with the
-    // search, so the two compose without either one touching the other's state.
-    function apply() {
-      const dm = window.datamap;
-      if (!dm) { return; }
-      if (!active) {
-        try { dm.removeSelection("emoji-filter"); } catch (e) {}
-      } else {
-        const mt = (dm.metaData && dm.metaData.motif_tags) || [];
-        const idx = [];
-        const needle = " " + active + " ";
-        for (let i = 0; i < mt.length; i++) { if ((" " + (mt[i] || "") + " ").indexOf(needle) !== -1) { idx.push(i); } }
-        dm.addSelection(idx, "emoji-filter");
-      }
-      strip.querySelectorAll(".emoji-btn").forEach(function (b) {
-        b.classList.toggle("active", b.dataset.motif === active);
-      });
-    }
-    BUTTONS.forEach(function (pair) {
-      const b = document.createElement("button");
-      b.className = "emoji-btn";
-      b.type = "button";
-      b.textContent = pair[0];
-      b.title = pair[1];
-      b.setAttribute("aria-label", pair[1]);
-      b.dataset.motif = pair[2];
-      b.addEventListener("click", function () {
-        active = (active === pair[2]) ? "" : pair[2];
-        apply();
-      });
-      grid.appendChild(b);
-    });
-    strip.appendChild(grid);
-    sc.after(strip);
-
-    // ── live "N tasks" caption + blank-on-empty (mirrors the HF filter panel) ──
-    const count = document.createElement("div");
-    count.id = "emoji-count";
-    strip.after(count);
-    function updateCount() {
-      const d = window.datamap;
-      const mgr = d && d.dataSelectionManager;
-      if (!d || !mgr || !d.selected) { setTimeout(updateCount, 150); return; }  // datamap not fully ready yet
-      const total = d.selected.length;
-      const hasFilters = Object.keys(mgr.selectedIndicesByItem).length > 0;
-      const n = hasFilters ? mgr.getSelectedIndices().size : total;
-      if (hasFilters && n === 0) {
-        count.textContent = "No matches";
-        count.classList.add("empty");
-      } else {
-        count.textContent = n.toLocaleString() + (n === 1 ? " task" : " tasks");
-        count.classList.remove("empty");
-      }
-    }
-    if (!dm.__emojiCountPatched) {
-      dm.__emojiCountPatched = true;
-      const origHighlight = dm.highlightPoints.bind(dm);
-      dm.highlightPoints = function (itemId) {
-        // keep point radius through the highlight clone (DataMapPlot otherwise resets it)
-        const layer = dm.pointLayer;
-        const realClone = layer.clone.bind(layer);
-        layer.clone = function (ov) {
-          ov.radiusMinPixels = dm.pointRadiusMinPixels;
-          ov.radiusMaxPixels = dm.pointRadiusMaxPixels;
-          return realClone(ov);
-        };
-        origHighlight(itemId);
-        layer.clone = realClone;
-        // DataMapPlot shows ALL points on an empty selection; when filters are active but
-        // match nothing, force the map blank instead so the red "No matches" caption fits.
-        const mgr = dm.dataSelectionManager;
-        const hasFilters = Object.keys(mgr.selectedIndicesByItem).length > 0;
-        if (hasFilters && mgr.getSelectedIndices().size === 0) {
-          dm.selected.fill(-1.0);
-          const i = dm.layers.indexOf(dm.pointLayer);
-          if (i !== -1) {
-            const blanked = dm.pointLayer.clone({
-              radiusMinPixels: dm.pointRadiusMinPixels,
-              radiusMaxPixels: dm.pointRadiusMaxPixels,
-            });
-            dm.layers[i] = blanked;
-            dm.pointLayer = blanked;
-            dm.deckgl.setProps({ layers: [...dm.layers] });
-          }
-        }
-        updateCount();
-      };
-    }
-    updateCount();
-  }
-  build();
-})();
-"""
-
-# Single source of truth: build the strip's [glyph, label, key] rows from motifs.py.
-_MOTIF_BUTTONS_JS = ",\n".join(
-    f"    [{json.dumps(m['glyph'], ensure_ascii=False)}, {json.dumps(m['label'])}, {json.dumps(m['key'])}]"
-    for m in MOTIFS
-)
-EMOJI_STRIP_JS = EMOJI_STRIP_JS.replace("__BUTTONS__", _MOTIF_BUTTONS_JS)
-
-CUSTOM_JS = "datamap.deckgl.setProps({controller: {scrollZoom: {speed: 0.05, smooth: true}}});\n" + EMOJI_STRIP_JS
+CUSTOM_JS = "datamap.deckgl.setProps({controller: {scrollZoom: {speed: 0.05, smooth: true}}});\n"
 
 CUSTOM_CSS = """
 #main-title { letter-spacing: -0.02em; line-height: 1.1 !important; color: #1f2328; }
-#search-container { width: 292px; box-sizing: border-box; }
-#text-search { width: 100%; box-sizing: border-box; }
-/* box chrome (shadow / radius / inset margin / padding / pointer-events) comes from the
-   shared .container-box + .interactive-element classes; this only sets width + the grid. */
-#emoji-strip { width: 292px; box-sizing: border-box; }
-#emoji-strip .emoji-grid {
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 4px;
-}
-#emoji-strip .emoji-btn {
-  height: 29px; padding: 0;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 17px; line-height: 1;
-  background: #fff;
-  border: 1px solid rgba(0, 0, 0, 0.10);
-  border-radius: 7px; cursor: pointer;
-  transition: background .12s, border-color .12s, transform .05s;
-  -webkit-user-select: none; user-select: none;
-}
-#emoji-strip .emoji-btn:hover { background: #eef1f4; border-color: rgba(0, 0, 0, 0.30); }
-#emoji-strip .emoji-btn:active { transform: scale(0.88); }
-#emoji-strip .emoji-btn.active {
-  background: #1f2328; border-color: #1f2328; box-shadow: 0 1px 5px rgba(0, 0, 0, 0.30);
-}
-#emoji-count {
-  margin: 6px 0 0 28px;
-  font-size: 12px;
-  line-height: 1.2;
-  color: #8b949e;
-  font-family: 'IBM Plex Sans', system-ui, sans-serif;
-  pointer-events: none;
-}
-#emoji-count.empty { color: #d9594c; font-weight: 600; }
 """
 
 # Attribution footer (bottom-right) — the data is CC BY-SA 4.0, so the published map
@@ -413,8 +255,6 @@ def main():
     ]
     # key_props is still extracted (stage 05) but no longer shown — the emoji gist replaced it.
     emoji_disp = [escape(str(e)) for e in df["task_emoji"].fillna("")]
-    # Space-separated motif keys (stage 05) — drives the filter strip; never shown in the card.
-    motif_tags_disp = [str(t) for t in df["motif_tags"].fillna("")]
     winner_disp = [_dim_cell(w) for w in df["winner"].fillna("").values]
 
     contestants_list = [_maybe_json_list(v) for v in df["contestants"].values]
@@ -422,14 +262,22 @@ def main():
     air_disp = [a.strftime("%d %b %Y") if pd.notna(a) else "—" for a in air]
     wiki_url = [f"https://taskmaster.fandom.com/wiki/{escape(str(s).replace(' ', '_'))}" for s in df["series"]]
 
-    # Search index drives the text "filter": typing a contestant name (or a word from
-    # the brief/series) highlights matching tasks via DataMapPlot search. Emoji are a
-    # SEPARATE filter (the button strip registers an "emoji-filter" selection via the
-    # dataSelectionManager), deliberately kept out of this index so the text box and the
-    # emoji bar are independent systems that compose by intersection.
+    # Search index: the brief, series, contestants, winner, episode title, and twist labels.
+    # Twist is the one card field with no colormap (it's multi-valued), so its labels go in
+    # search instead ("teamwork", "time limit", "body restriction"). Activity / Judged / Type
+    # are left out: their colormap legends already select by them, and as substring matches
+    # their labels would swamp ordinary queries ("perform", "build").
+    twist_text = [" ".join(_prettify(t) for t in _maybe_json_list(v)) for v in df["task_twist"].values]
     search_text = [
-        f"{b} {s} {' '.join(cs)} {w}"
-        for b, s, cs, w in zip(df["embed_text"].fillna(""), df["series"], contestants_list, df["winner"].fillna(""))
+        f"{b} {s} {' '.join(cs)} {w} {t} {tw}"
+        for b, s, cs, w, t, tw in zip(
+            df["embed_text"].fillna(""),
+            df["series"],
+            contestants_list,
+            df["winner"].fillna(""),
+            df["episode_title"].fillna(""),
+            twist_text,
+        )
     ]
 
     # Uniform marker size (divisiveness, which used to drive it, was dropped).
@@ -439,7 +287,6 @@ def main():
         {
             "series_ep": series_ep,
             "task_emoji": emoji_disp,
-            "motif_tags": motif_tags_disp,
             "brief": brief,
             "type_pill": type_pill,
             "activity": activity_disp,
