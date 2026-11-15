@@ -15,8 +15,9 @@ separate from the taxonomy call preserves the tuned wit and means a rerun after
 the taxonomy is cached regenerates only the cheap emoji.
 
 Validate first on a sample (`--limit 50`), eyeball the tags, then run the full set
-(the sample's cached results are reused). Opus 4.8 takes no `temperature`, so the
-call is just model + max_tokens + system (cached) + messages.
+(the sample's cached results are reused). Opus 5.5 takes no `temperature` and always
+thinks, so the call is model + max_tokens + effort + system (cached) + messages, and a
+non-`end_turn` stop (thinking ate max_tokens, or a refusal) counts as a failure.
 
 Input:  data/task_rows.parquet  +  pipeline/taxonomy.json
 Output: data/structured_fields.parquet
@@ -33,13 +34,16 @@ import tempfile
 from pathlib import Path
 
 import pandas as pd
+import regex
 from anthropic import AsyncAnthropic
 from config import (
     ANTHROPIC_API_KEY,
     ANTHROPIC_MODEL_EXTRACT,
     EMOJI_CACHE_DIR,
+    EMOJI_EFFORT,
     EMOJI_MAX_TOKENS,
     EXTRACT_CONCURRENCY,
+    EXTRACT_EFFORT,
     EXTRACT_MAX_RETRIES,
     EXTRACT_MAX_TOKENS,
     STRUCTURED_FIELDS_CACHE_DIR,
@@ -122,9 +126,12 @@ async def _extract_one(client, sem, system, task_id, brief, task_format) -> dict
                 resp = await client.messages.create(
                     model=ANTHROPIC_MODEL_EXTRACT,
                     max_tokens=EXTRACT_MAX_TOKENS,
+                    output_config={"effort": EXTRACT_EFFORT},
                     system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
                     messages=[{"role": "user", "content": _build_user_message(brief, task_format)}],
                 )
+            if resp.stop_reason != "end_turn":  # truncated by thinking, or refused: retry, then error
+                raise RuntimeError(f"stop_reason={resp.stop_reason!r}")
             raw = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
             return {
                 "task_id": int(task_id),
@@ -202,6 +209,36 @@ EMOJI_SYSTEM = (
 )
 
 
+# Opus 5.5 at low effort sometimes deliberates in the visible answer ("👂🔊🤔 Wait — 🤔 is
+# filler. Final: 👂🔊🕵️"). Two guards: a JSON schema (pushes deliberation into thinking),
+# and a validator that rejects anything but 1-4 emoji, so a bad answer is retried, never cached.
+EMOJI_SCHEMA = {
+    "type": "object",
+    "properties": {"emoji": {"type": "string"}},
+    "required": ["emoji"],
+    "additionalProperties": False,
+}
+# One grapheme = a pictographic emoji (incl. ZWJ/skin-tone sequences, which \X keeps whole),
+# a regional-indicator / enclosed-letter glyph (🇬, 🅖 — letter puns), a domino / mahjong /
+# playing-card glyph (🁫 for a dominoes task), or a keycap. A run of keycaps is one number
+# (5️⃣0️⃣ = 50), counted as one. The cap only exists to catch prose: leaks were 30+ graphemes.
+_EMOJI_GRAPHEME = regex.compile(
+    r"^(?:\p{Extended_Pictographic}|[\U0001F000-\U0001F0FF]|[\U0001F100-\U0001F1FF]|[0-9#*]\uFE0F?\u20E3)"
+)
+_KEYCAP = regex.compile(r"^[0-9#*]\uFE0F?\u20E3$")
+EMOJI_MAX_COUNT = 5  # the prompt asks for 2-4; 1 and 5 are tolerated as well-formed
+
+
+def emoji_problem(s: str) -> str | None:
+    """None if `s` is 1..EMOJI_MAX_COUNT emoji and nothing else, else a short reason."""
+    graphemes = regex.findall(r"\X", s.strip())
+    bad = [g for g in graphemes if not _EMOJI_GRAPHEME.match(g)]
+    if bad:
+        return f"non-emoji {bad[:5]!r}"
+    n = sum(1 for i, g in enumerate(graphemes) if not (_KEYCAP.match(g) and i and _KEYCAP.match(graphemes[i - 1])))
+    return None if 1 <= n <= EMOJI_MAX_COUNT else f"{n} emoji"
+
+
 async def _emoji_one(client, sem, task_id, brief) -> str:
     last_err = None
     for attempt in range(EXTRACT_MAX_RETRIES):
@@ -210,10 +247,17 @@ async def _emoji_one(client, sem, task_id, brief) -> str:
                 resp = await client.messages.create(
                     model=ANTHROPIC_MODEL_EXTRACT,
                     max_tokens=EMOJI_MAX_TOKENS,
+                    output_config={"effort": EMOJI_EFFORT, "format": {"type": "json_schema", "schema": EMOJI_SCHEMA}},
                     system=[{"type": "text", "text": EMOJI_SYSTEM, "cache_control": {"type": "ephemeral"}}],
                     messages=[{"role": "user", "content": f"Task brief:\n{brief}"}],
                 )
-            return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+            if resp.stop_reason != "end_turn":  # truncated by thinking, or refused: retry, then give up
+                raise RuntimeError(f"stop_reason={resp.stop_reason!r}")
+            text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+            emoji = str(json.loads(text)["emoji"]).strip()
+            if problem := emoji_problem(emoji):
+                raise ValueError(f"invalid emoji output ({problem}): {emoji[:60]!r}")
+            return emoji
         except Exception as e:  # noqa: BLE001 — one bad task shouldn't crash the batch
             last_err = e
             if attempt < EXTRACT_MAX_RETRIES - 1:
@@ -244,12 +288,14 @@ async def _run_emoji(rows: pd.DataFrame) -> None:
     client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     sem = asyncio.Semaphore(EXTRACT_CONCURRENCY)
 
-    todo = []
+    todo, n_invalid = [], 0
     for _, row in rows.iterrows():
         if (EMOJI_CACHE_DIR / f"{_safe_filename(row['task_id'])}.txt").exists():
-            continue
+            if emoji_problem(_load_emoji(row["task_id"])) is None:
+                continue
+            n_invalid += 1  # cached before validation existed (e.g. leaked reasoning): regenerate
         todo.append((row["task_id"], row["embed_text"]))
-    print(f"{len(todo)} emoji to generate ({len(rows) - len(todo)} already cached)")
+    print(f"{len(todo)} emoji to generate ({len(rows) - len(todo)} already cached, {n_invalid} cached-but-invalid)")
     if not todo:
         return
 
@@ -327,7 +373,8 @@ def aggregate(taxonomy, fields, corpus_task_ids) -> pd.DataFrame:
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    df["task_emoji"] = [_load_emoji(t) for t in df["task_id"]]
+    # An invalid cached emoji (failed regeneration) ships as blank, never as leaked prose.
+    df["task_emoji"] = [e if emoji_problem(e) is None else "" for e in (_load_emoji(t) for t in df["task_id"])]
     tmp_fd, tmp_path = tempfile.mkstemp(dir=STRUCTURED_FIELDS_PARQUET.parent, suffix=".parquet.tmp")
     os.close(tmp_fd)
     try:

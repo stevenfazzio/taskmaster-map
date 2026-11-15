@@ -189,7 +189,7 @@ ATTRIBUTION_HTML = (
     'Data: <a href="https://taskmaster.fandom.com/" target="_blank" rel="noopener" '
     'style="color:#57606a;">Taskmaster Wiki</a> via '
     '<a href="https://github.com/silverdavi/taskmaster-uk-scores" target="_blank" rel="noopener" '
-    'style="color:#57606a;">silverdavi/taskmaster-uk-scores</a> · '
+    'style="color:#57606a;">silverdavi/taskmaster-uk-scores</a> (Series 21+ read from the wiki directly) · '
     '<a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener" '
     'style="color:#57606a;">CC BY-SA 4.0</a> · '
     '<a href="https://github.com/stevenfazzio/taskmaster-map" target="_blank" rel="noopener" '

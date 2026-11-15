@@ -1,18 +1,20 @@
-"""Hierarchical region labels for the map via Toponymy + Claude (Opus 4.8).
+"""Hierarchical region labels for the map via Toponymy + Claude (Opus 5.5).
 
 Toponymy names *regions of the embedding space* (place-naming), not individual
 tasks. The 2D UMAP coords are the substrate the named regions sit on
 (clusterable_vectors); the task embeddings carry the semantic content used while
-clustering (embedding_vectors). Toponymy's own keyphrase embedder (CohereEmbedder)
-is INDEPENDENT of these vectors — it embeds candidate names in its own search_query
-space and ranks them against each other, never against our doc vectors — so its
-model/dim need not match ours. Output is a per-task region name at several zoom
+clustering (embedding_vectors). Toponymy's own keyphrase embedder (the same Qwen3 model
+via OpenRouter, but with NO instruction) is INDEPENDENT of these vectors — it embeds
+candidate names in their own space and ranks them against each other, never against
+our doc vectors — so its instruction/dim need not match ours. Output is a per-task region name at several zoom
 levels, fed to DataMapPlot's label layers (finest first). Tasks in unnamed space
 come back "Unlabelled"; at ~1k points that fraction is high by design (sparse
 density), and is a gap on the map (signal), not a failure.
 
-Opus 4.8 note: the stock AsyncAnthropicNamer passes `temperature`, which Opus 4.7/4.8
-removed (400, fail-fast). OpusAnthropicNamer below drops it.
+Opus 5.5 note: the stock AsyncAnthropicNamer passes `temperature`, which current Opus
+models reject (400, fail-fast). OpusAnthropicNamer below drops it, sets effort explicitly
+(thinking is always on; the API default effort is "medium"), and floors max_tokens so
+thinking can't starve the answer.
 
 Inputs:  data/task_embeddings.npz, data/umap_coords.npz, data/task_rows.parquet
 Output:  data/toponymy_labels.parquet  (task_id + label_layer_0..k, finest first)
@@ -29,13 +31,17 @@ from config import (
     ANTHROPIC_API_KEY,
     ANTHROPIC_MAX_CONCURRENCY,
     ANTHROPIC_MODEL_NAMING,
-    CO_API_KEY,
-    COHERE_EMBED_MODEL,
+    EMBED_DIM,
+    EMBED_MODEL,
+    NAMING_EFFORT,
+    NAMING_MIN_MAX_TOKENS,
+    OPENROUTER_API_KEY,
     TASK_EMB_NPZ,
     TASK_ROWS_PARQUET,
     TOPONYMY_LABELS_PARQUET,
     UMAP_COORDS_NPZ,
 )
+from openrouter_embed import OpenRouterEmbedder
 from toponymy.llm_wrappers import AsyncAnthropicNamer
 
 nest_asyncio.apply()
@@ -44,34 +50,42 @@ MAX_DOC_CHARS = 2_000
 
 
 class OpusAnthropicNamer(AsyncAnthropicNamer):
-    """AsyncAnthropicNamer with the Opus 4.8 call surface: `temperature` is removed
-    on Opus 4.7/4.8 (the stock namer passes it and would 400 fail-fast). We keep the
-    method signatures (Toponymy passes temperature/max_tokens) but don't forward
-    temperature, and join all text blocks so the parse is robust to any preamble."""
+    """AsyncAnthropicNamer with the Opus 5.5 call surface. Keeps Toponymy's method
+    signatures (it passes temperature/max_tokens) but: never forwards temperature
+    (400 on current Opus); sets effort explicitly; floors max_tokens, since thinking is
+    always on and its tokens count against the cap; raises on a non-`end_turn` stop
+    (truncation/refusal) so Toponymy's retry + per-prompt error handling sees it instead
+    of a half-empty parse; and joins all text blocks so the parse ignores thinking blocks."""
+
+    effort = NAMING_EFFORT
+    min_max_tokens = NAMING_MIN_MAX_TOKENS
+
+    async def _create(self, max_tokens, messages, system=None):
+        kwargs = {"system": system} if system else {}
+        if self.effort:  # None = legacy Opus 4.8 call (no effort/thinking), as the original map ran
+            kwargs["output_config"] = {"effort": self.effort}
+        async with self.semaphore:
+            resp = await self.client.messages.create(
+                model=self.model,
+                max_tokens=max(max_tokens, self.min_max_tokens),
+                messages=messages,
+                **kwargs,
+            )
+        if resp.stop_reason != "end_turn":
+            raise RuntimeError(f"naming call stopped with stop_reason={resp.stop_reason!r}")
+        return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
 
     async def _call_single_llm(self, prompt, temperature, max_tokens):
-        async with self.semaphore:
-            resp = await self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt + self.extra_prompting}],
-            )
-        return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        return await self._create(max_tokens, [{"role": "user", "content": prompt + self.extra_prompting}])
 
     async def _call_single_llm_with_system(self, system_prompt, user_prompt, temperature, max_tokens):
-        async with self.semaphore:
-            resp = await self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt + self.extra_prompting}],
-            )
-        return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        return await self._create(
+            max_tokens, [{"role": "user", "content": user_prompt + self.extra_prompting}], system=system_prompt
+        )
 
 
 def main():
     from toponymy import Toponymy, ToponymyClusterer
-    from toponymy.embedding_wrappers import CohereEmbedder
 
     # coords define point order; align the embedding matrix to the same task_id order.
     crd = np.load(UMAP_COORDS_NPZ, allow_pickle=True)
@@ -95,7 +109,7 @@ def main():
         model=ANTHROPIC_MODEL_NAMING,
         max_concurrent_requests=ANTHROPIC_MAX_CONCURRENCY,
     )
-    embedder = CohereEmbedder(api_key=CO_API_KEY, model=COHERE_EMBED_MODEL)
+    embedder = OpenRouterEmbedder(api_key=OPENROUTER_API_KEY, model=EMBED_MODEL, dimensions=EMBED_DIM)
     clusterer = ToponymyClusterer(min_clusters=6)
 
     topic_model = Toponymy(
@@ -119,10 +133,14 @@ def main():
         raise ValueError("Toponymy produced 0 cluster layers")
     print(f"Toponymy produced {n_layers} cluster layer(s)")
 
+    print(f"Naming model: {ANTHROPIC_MODEL_NAMING} (effort={NAMING_EFFORT})")
     out = {"task_id": task_id}
     for i, names in enumerate(topic_model.topic_name_vectors_):
         names = np.asarray(names, dtype=object)
         out[f"label_layer_{i}"] = names
+        # Raw cluster ids (-1 = noise) alongside the names, so runs that name the same
+        # layout can be checked for identical clusters and aligned region-by-region.
+        out[f"cluster_layer_{i}"] = np.asarray(topic_model.cluster_layers_[i].cluster_labels, dtype=np.int32)
         n_named = int(np.sum(names != "Unlabelled"))
         uniq = sorted({n for n in names.tolist() if n != "Unlabelled"})
         print(f"  layer {i}: {len(uniq)} regions, {n_named}/{len(names)} tasks named")

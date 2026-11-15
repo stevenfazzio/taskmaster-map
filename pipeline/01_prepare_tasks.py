@@ -20,7 +20,8 @@ Derived per-task fields:
   winner           contestant(s) with the top score ("/"-joined on ties)
   contestants      list of all contestants on the task (drives the stage-06 filter)
 
-Input:  data/{tasks,scores,episodes}_raw.parquet
+Input:  data/{tasks,scores,episodes}_raw.parquet (upstream, stage 00)
+        + data/wiki_{tasks,scores,episodes}_raw.parquet if present (stage 00b)
 Output: data/task_rows.parquet
 """
 
@@ -37,6 +38,7 @@ from config import (
     SOURCE_CSVS,
     SUBSET_SEED,
     TASK_ROWS_PARQUET,
+    WIKI_RAW,
 )
 
 _WS = re.compile(r"\s+")
@@ -91,7 +93,22 @@ def main():
     tasks = pd.read_parquet(SOURCE_CSVS["tasks"])
     scores = pd.read_parquet(SOURCE_CSVS["scores_long"])
     episodes = pd.read_parquet(SOURCE_CSVS["episodes"])
-    print(f"tasks: {len(tasks):,}  scores: {len(scores):,}  episodes: {len(episodes):,}")
+    print(f"upstream  tasks: {len(tasks):,}  scores: {len(scores):,}  episodes: {len(episodes):,}")
+
+    # Series upstream doesn't have yet, scraped from the wiki by stage 00b (same schema).
+    if all(WIKI_RAW[k].exists() for k in ("tasks", "scores_long", "episodes")):
+        w_tasks, w_scores, w_eps = (pd.read_parquet(WIKI_RAW[k]) for k in ("tasks", "scores_long", "episodes"))
+        overlap = set(w_tasks["series"]) & set(tasks["series"])
+        if overlap:
+            raise ValueError(f"wiki series also in upstream: {sorted(overlap)} — drop them from WIKI_SERIES")
+        if set(w_tasks["task_id"]) & set(tasks["task_id"]):
+            raise ValueError("wiki task_ids collide with upstream task_ids")
+        tasks = pd.concat([tasks, w_tasks], ignore_index=True)
+        scores = pd.concat([scores, w_scores], ignore_index=True)
+        episodes = pd.concat([episodes, w_eps], ignore_index=True)
+        print(f"+ wiki    tasks: {len(w_tasks):,}  ({', '.join(sorted(w_tasks['series'].unique()))})")
+    else:
+        print("  (no wiki_*_raw.parquet — run stage 00b to add series upstream lacks)")
 
     df = tasks.copy()
     for c in ("is_prize", "is_live", "is_tiebreak"):

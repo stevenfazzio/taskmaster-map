@@ -16,8 +16,9 @@ and the rich hover card).
 make install   # uv sync --extra dev
 
 python pipeline/00_fetch_taskmaster.py   # silverdavi CSVs -> *_raw.parquet
+python pipeline/00b_fetch_wiki.py        # series upstream lacks (S21+), from the wiki -> wiki_*_raw.parquet
 python pipeline/01_prepare_tasks.py      # clean + derive fields -> task_rows.parquet
-python pipeline/02_embed_tasks.py        # Cohere embed-v4.0 -> task_embeddings.npz
+python pipeline/02_embed_tasks.py        # Qwen3-Embedding-8B (OpenRouter) -> task_embeddings.npz
 python pipeline/03_reduce_umap.py        # UMAP -> umap_coords.npz
 python pipeline/04_label_topics.py       # Toponymy + Opus -> toponymy_labels.parquet
 python pipeline/05_extract_fields.py     # Opus taxonomy + emoji gist -> structured_fields.parquet
@@ -33,4 +34,7 @@ Task briefs, scores, and episode metadata come from
 [silverdavi/taskmaster-uk-scores](https://github.com/silverdavi/taskmaster-uk-scores)
 (pinned commit), which is compiled from the
 [Taskmaster Fandom Wiki](https://taskmaster.fandom.com/) and released under
-**CC BY-SA 4.0**. This project inherits that licence for the derived data.
+**CC BY-SA 4.0**. That dataset stops at New Year Treat 6 (Jan 2026), so later series
+(Series 21–22 so far) are read from the wiki directly by stage `00b`, pinned by page
+revision in `pipeline/wiki_pins.json`. This project inherits the licence for the
+derived data.
